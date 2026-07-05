@@ -48,3 +48,18 @@ Cross-step decisions, conventions, and gotchas. Append as steps complete.
   plugin/app-only deps stay app-local (declared only in the app's package.json,
   excluded from core dist). APPROVALS.md restates this scope so the approval
   request and the package.json step stay aligned.
+
+## Step: APPROVALS.request.md (done)
+
+- `apps/voice-room-node/APPROVALS.request.md` is the pasteable GitHub issue/PR
+  body asking a maintainer to approve `onnxruntime-node`. Names the dependency,
+  pinned version, arch (x86_64 Linux), rationale, scope, and an explicit ask.
+- **Version pinned: `onnxruntime-node@1.27.0`** (latest on npm as of 2026-07-05,
+  via `npm view onnxruntime-node version`). This is now the canonical pin. The
+  `package.json` step MUST use this exact version. I also back-filled a
+  **Pinned version** line into `APPROVALS.md` so both files agree — if the pin
+  ever changes, update all three: `APPROVALS.request.md`, `APPROVALS.md`, and
+  `package.json`.
+- The request file's closing paragraph points at the `Approving PR/issue:` line
+  in `APPROVALS.md` as where the approval URL lands (the next step flips
+  `PENDING` there).

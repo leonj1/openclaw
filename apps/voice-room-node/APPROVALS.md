@@ -5,6 +5,8 @@ tracks the approval state for dependencies added by `apps/voice-room-node`.
 
 ## `onnxruntime-node`
 
+- **Pinned version:** `1.27.0` (kept in sync with `APPROVALS.request.md` and,
+  when created, `apps/voice-room-node/package.json`).
 - **Rationale:** openWakeWord "Hey Jarvis" detection runs its mel-spectrogram,
   embedding, and `hey_jarvis` classifier as ONNX models. `onnxruntime-node`
   provides the native ONNX Runtime inference bindings that execute these models
