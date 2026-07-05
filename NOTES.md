@@ -177,3 +177,48 @@ scripts/tsdown-build.mjs` (exit 0); `dist/` has **no `dist/apps`** and
   that import `onnxruntime-node` (e.g. `src/wake/onnx-sessions.ts`) must resolve it
   from the app's own `node_modules`, not the repo root — do not add it to root
   `package.json` to "fix" a resolution issue; run the install inside the app dir.
+
+## Step: src/config.ts (done)
+
+- `apps/voice-room-node/src/config.ts` is the typed node config, validated with
+  **`zod`** (`NodeConfigSchema`, `.strict()` on every object). Zod 4 APIs are in
+  use: `.prefault({})` for nested optional sections, `z.prettifyError` for the
+  error string. The repo root already depends on zod 4, so no new dep.
+- **Public API later steps consume:**
+  - `NodeConfig` (the `z.infer` type) — import this for typed config everywhere.
+  - `loadNodeConfig(env = process.env): NodeConfigResult` — the real entrypoint
+    for `main.ts`: reads file + env overrides, validates, returns a closed
+    result. **`main.ts` must branch on `result.ok`** (no throws); `{ ok:false,
+error }` carries a human string.
+  - `parseNodeConfig(input): NodeConfigResult` — pure validate of an object
+    (used by the acceptance test).
+  - `resolveConfigPath(env)` — where the file is read from.
+- **Config shape (defaults in parens):**
+  - `gateway.url` (**required**, must be a valid URL — the missing-URL rejection
+    case). `gateway.tokenEnv` ("OPENCLAW_VOICE_ROOM_TOKEN") — names the env var
+    holding the auth token; the **token itself is never in the config file**.
+    So the gateway-connect step reads the secret via
+    `process.env[config.gateway.tokenEnv]`, not from config directly.
+  - `audio.captureDevice` / `audio.playbackDevice` ("default") — raw ALSA ids
+    passed to `arecord -D` / `aplay -D` (e.g. `plughw:CARD=Anker,DEV=0`).
+  - `wake.threshold` (0.5, clamped [0,1]) — openWakeWord score gate for
+    `openwakeword.ts`.
+  - `endpointing.silenceMs` (800) — trailing-silence endpointing in
+    `talk-node.ts`; `endpointing.maxUtteranceMs` (15000) — hard utterance cap.
+- **Config file location:** `OPENCLAW_VOICE_ROOM_CONFIG` (explicit path) else
+  `~/.openclaw/voice-room.json`. A **missing file is not an error** — env
+  overrides + schema defaults can still validate (only `gateway.url` is truly
+  required). Env overrides: `OPENCLAW_VOICE_ROOM_GATEWAY_URL`,
+  `..._TOKEN_ENV`, `..._CAPTURE_DEVICE`, `..._PLAYBACK_DEVICE`.
+- **Gotcha — tests do NOT run in the core unit lanes.** `apps/voice-room-node`
+  is outside the pnpm workspace, so a dedicated Vitest shard was wired:
+  `test/vitest/vitest.apps-voice-room.config.ts` (project name `apps-voice-room`,
+  include `apps/voice-room-node/**/*.test.ts`). It was registered in
+  `test/vitest/vitest.config.ts` (`rootVitestProjects`),
+  `test/vitest/vitest.test-shards.mjs` (`fullSuiteVitestShards`),
+  `scripts/test-projects.test-support.mjs` (kind `appsVoiceRoom` +
+  `classifyTarget` routes `apps/voice-room-node` paths there), and the expected
+  lists in `test/scripts/test-projects.test.ts`. **All future
+  `apps/voice-room-node/**/\*.test.ts`files land in this shard automatically** —
+no per-file wiring needed;`pnpm test apps/voice-room-node/<file>` just works
+  (verified: config.test.ts 8/8 green, test-projects.test.ts 182/182 green).

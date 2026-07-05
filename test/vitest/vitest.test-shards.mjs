@@ -85,6 +85,7 @@ export const fullSuiteVitestShards = [
       "test/vitest/vitest.ui.config.ts",
       "test/vitest/vitest.utils.config.ts",
       "test/vitest/vitest.wizard.config.ts",
+      "test/vitest/vitest.apps-voice-room.config.ts",
     ],
   },
   {

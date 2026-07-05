@@ -84,6 +84,7 @@ export const rootVitestProjects = [
   "test/vitest/vitest.extension-media.config.ts",
   "test/vitest/vitest.extension-misc.config.ts",
   "test/vitest/vitest.extensions.config.ts",
+  "test/vitest/vitest.apps-voice-room.config.ts",
 ] as const;
 
 export default defineConfig({

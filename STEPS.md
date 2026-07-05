@@ -23,7 +23,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 - [x] Verify `onnxruntime-node` does not leak into the root package: confirm it is declared only in `apps/voice-room-node/package.json` and not in the root `package.json`.
       Done when: `grep onnxruntime-node package.json` at the repo root returns no match, while `apps/voice-room-node/package.json` still lists it.
 
-- [ ] Add `apps/voice-room-node/src/config.ts` defining a typed node config (gateway URL/token source, ALSA capture + playback device ids, wake threshold, silence/endpointing timeouts) loaded from a node-local config file/env, with schema validation via `zod` or an existing helper.
+- [x] Add `apps/voice-room-node/src/config.ts` defining a typed node config (gateway URL/token source, ALSA capture + playback device ids, wake threshold, silence/endpointing timeouts) loaded from a node-local config file/env, with schema validation via `zod` or an existing helper.
       Done when: `pnpm test apps/voice-room-node/src/config.test.ts` passes a test that valid config parses and an invalid one (missing gateway URL) is rejected.
 
 ## Phase 1 — Device node skeleton (capture/playback + gateway + push-to-talk)

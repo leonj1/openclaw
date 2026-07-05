@@ -64,6 +64,7 @@ import {
 } from "./run-vitest.mjs";
 
 const DEFAULT_VITEST_CONFIG = "test/vitest/vitest.unit.config.ts";
+const APPS_VOICE_ROOM_VITEST_CONFIG = "test/vitest/vitest.apps-voice-room.config.ts";
 const AGENTS_CORE_VITEST_CONFIG = "test/vitest/vitest.agents-core.config.ts";
 const AGENTS_EMBEDDED_AGENT_VITEST_CONFIG = "test/vitest/vitest.agents-embedded-agent.config.ts";
 const AGENTS_SUPPORT_VITEST_CONFIG = "test/vitest/vitest.agents-support.config.ts";
@@ -301,6 +302,7 @@ const FAILED_SHARD_DIGEST_LIMIT = 12;
 const CHANGED_ARGS_PATTERN = /^--changed(?:=(.+))?$/u;
 const VITEST_CONFIG_BY_KIND = {
   acp: ACP_VITEST_CONFIG,
+  appsVoiceRoom: APPS_VOICE_ROOM_VITEST_CONFIG,
   agentCore: AGENTS_CORE_VITEST_CONFIG,
   agentEmbedded: AGENTS_EMBEDDED_AGENT_VITEST_CONFIG,
   agentSupport: AGENTS_SUPPORT_VITEST_CONFIG,
@@ -3452,6 +3454,11 @@ function classifyTarget(arg, cwd) {
   if (configTargetKind) {
     return configTargetKind;
   }
+  // The out-of-workspace voice-room app owns a dedicated shard so its app-local
+  // deps never resolve inside the core src/** unit lanes.
+  if (isPathAtOrUnder(relative, "apps/voice-room-node")) {
+    return "appsVoiceRoom";
+  }
   if (isControlUiE2eTarget(relative)) {
     return "uiE2e";
   }
@@ -3840,6 +3847,7 @@ export function buildVitestRunPlans(
     "unitFast",
     "unitFastFakeTimers",
     "default",
+    "appsVoiceRoom",
     "boundary",
     "toolingDocker",
     "toolingIsolated",
