@@ -124,3 +124,38 @@ Cross-step decisions, conventions, and gotchas. Append as steps complete.
   above) is still CLOSED — `APPROVALS.md` reads `PENDING`. This step created the
   package.json because it was the explicitly assigned task; if a maintainer later
   rejects `onnxruntime-node`, this dep + the Phase-2 wake code must be revisited.
+
+## Step: exclude apps/voice-room-node from core dist (done)
+
+- **What "package-exclude/core-dist config" is here:** the root `package.json`
+  `files` array. That array is the npm-pack allowlist and is the canonical
+  mechanism that keeps surfaces out of the published core package (e.g. all the
+  `!dist/extensions/<id>/**` entries that exclude external plugins). Edited it to
+  add an explicit `"!apps/voice-room-node/**"` entry (right after the dist
+  excludes, before `"docs/"`) so the config demonstrably lists the app.
+- **Why the app was already excluded three ways** (the edit is belt-and-suspenders
+  documentation, matching the repo's pattern of enumerating excluded surfaces):
+  1. **Not a build entry.** `pnpm build` → `scripts/build-all.mjs` → tsdown
+     (`tsdown.config.ts`). Every dist entry is an _explicit_ path map under
+     `src/`, `packages/`, or `extensions/` — there is **no glob** and **no
+     `apps/` reference** anywhere in `tsdown.config.ts` / `tsdown-build.mjs` /
+     `build-all.mjs`. So the build cannot emit any `dist/apps/...` file.
+  2. **Not in the pnpm workspace** (already noted above — `pnpm-workspace.yaml`
+     lists only `.`, `ui`, `packages/*`, `extensions/*`).
+  3. **`files` array** never positively included `apps/` (only `dist/`, `docs/`,
+     `scripts/...`, etc.), and now explicitly negates `apps/voice-room-node/**`.
+- **Proof captured (both acceptance parts):**
+  - `grep apps/voice-room-node package.json` → matches the new `files` entry.
+  - `npm pack --dry-run --json | grep apps/voice-room-node` → **no matches**
+    (packaged core dist contains zero app files).
+  - Ran the dist emitter `OPENCLAW_RUN_NODE_SKIP_DTS_BUILD=1 node
+scripts/tsdown-build.mjs` (exit 0); `dist/` has **no `dist/apps`** and
+    `find dist -path '*voice-room-node*'` is empty. (Used the tsdown step +
+    skip-DTS instead of full `pnpm build` for speed; tsdown is the only step
+    that emits `dist/` from source entries, so it's the meaningful check. `dist/`
+    is a gitignored build artifact.)
+- **Gotcha for later steps / future apps:** the exclusion is app-specific
+  (`!apps/voice-room-node/**`), not a blanket `!apps/**`. `android`/`ios`/`macos`
+  apps stay excluded by omission from `files`; if a _new_ app ever needs the same
+  guarantee, add its own `!apps/<name>/**` line. Do not rely on `apps/` being
+  swept by a positive `files` pattern — none exists.

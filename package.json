@@ -160,6 +160,7 @@
     "!dist/plugin-sdk/src/plugin-sdk/qa-lab.d.ts",
     "!dist/plugin-sdk/src/plugin-sdk/qa-runtime.d.ts",
     "!dist/qa-runtime-*.js",
+    "!apps/voice-room-node/**",
     "docs/",
     "!docs/.generated/**",
     "!docs/channels/qa-channel.md",

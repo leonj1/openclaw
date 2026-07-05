@@ -17,7 +17,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 - [x] Create `apps/voice-room-node/package.json` (private, ESM, name `@openclaw/voice-room-node`) with `onnxruntime-node` as a dependency and `vitest` for tests; add an `AGENTS.md` for the app subtree plus a sibling `CLAUDE.md` symlink to it.
       Done when: `apps/voice-room-node/package.json` exists with `onnxruntime-node` listed, `ls -l apps/voice-room-node/CLAUDE.md` shows a symlink to `AGENTS.md`, and `pnpm install` completes without error.
 
-- [ ] Verify (and edit if needed) the package-exclude/core-dist config so `apps/voice-room-node` is excluded from the core dist build, per architecture rules.
+- [x] Verify (and edit if needed) the package-exclude/core-dist config so `apps/voice-room-node` is excluded from the core dist build, per architecture rules.
       Done when: the package-exclude/core-dist config lists `apps/voice-room-node`, and a core dist build (`pnpm build`) produces no files from `apps/voice-room-node`.
 
 - [ ] Verify `onnxruntime-node` does not leak into the root package: confirm it is declared only in `apps/voice-room-node/package.json` and not in the root `package.json`.
