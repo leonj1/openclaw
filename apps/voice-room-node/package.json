@@ -1,0 +1,19 @@
+{
+  "name": "@openclaw/voice-room-node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "\"Hey Jarvis\" voice-room device node (x86_64 Linux, ALSA + openWakeWord).",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "onnxruntime-node": "1.27.0"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}

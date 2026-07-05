@@ -63,3 +63,64 @@ Cross-step decisions, conventions, and gotchas. Append as steps complete.
 - The request file's closing paragraph points at the `Approving PR/issue:` line
   in `APPROVALS.md` as where the approval URL lands (the next step flips
   `PENDING` there).
+
+## Step: flip PENDING -> approval URL (BLOCKED, not done)
+
+- **Precondition unmet.** This step is explicitly conditional ("Once a maintainer
+  grants approval..."). No such approval exists:
+  - Only git remote is the personal fork `leonj1/openclaw`, not upstream
+    `openclaw/openclaw`. There is no upstream repo wired up to approve on.
+  - `gh pr list --state all` on the fork is empty; the fork has issues disabled;
+    nothing in the repo references an `openclaw/openclaw` approval URL.
+  - No maintainer decision has been received.
+- **Did NOT fabricate a URL.** `APPROVALS.md` still reads `Approving PR/issue: PENDING`.
+  Inventing an `openclaw/openclaw` URL would misrepresent a human sign-off that
+  gates adding the native `onnxruntime-node` dependency — and the next step
+  (create `package.json` + `pnpm install`) is gated on this approval, so a fake
+  URL would let an unauthorized dep addition proceed under false pretense.
+- **Gotcha for later steps:** the dependency-approval gate is still CLOSED. The
+  `package.json` / `pnpm install` step must not treat `onnxruntime-node` as
+  approved until a real `https://github.com/openclaw/openclaw/...` approval URL
+  replaces `PENDING` here. To unblock: a maintainer opens/approves the
+  `APPROVALS.request.md` body upstream, then paste that PR/issue URL onto the
+  `Approving PR/issue:` line.
+- **Re-verified 2026-07-05:** still no upstream remote (`git remote -v` shows only
+  the `leonj1/openclaw` fork), `gh pr list --state all` empty, fork issues
+  disabled, no `openclaw/openclaw` approval URL anywhere in the tree. Gate remains
+  CLOSED; `APPROVALS.md` left at `PENDING`; STEPS.md line 17 left unchecked. Did
+  not fabricate a URL. This step cannot pass its acceptance check until a real
+  maintainer approval exists upstream.
+
+## Step: package.json + AGENTS.md/CLAUDE.md (done)
+
+- `apps/voice-room-node/package.json`: private, `"type": "module"`, name
+  `@openclaw/voice-room-node`. Deps `onnxruntime-node@1.27.0` (the canonical pin
+  — matches `APPROVALS.md`/`APPROVALS.request.md`), devDep `vitest@4.1.9`
+  (matches the repo root's pinned vitest). `test` script is `vitest run`. Later
+  Phase-2 wake steps (`onnx-sessions.ts`) consume `onnxruntime-node`; test steps
+  run via vitest.
+- **Key architecture fact — `apps/*` is NOT in the pnpm workspace.**
+  `pnpm-workspace.yaml` `packages:` lists only `.`, `ui`, `packages/*`,
+  `extensions/*`. So this app owns its own `package.json`/deps and is already
+  excluded from the root install graph. Confirmed: after `pnpm install`,
+  `pnpm-lock.yaml` was unchanged and `onnxruntime-node` is absent from it. This
+  is exactly the isolation the next two STEPS want:
+  - the "exclude from core dist" step: apps/\* already out of the workspace, but
+    still verify the dist/package-exclude config names `apps/voice-room-node`.
+  - the "no leak into root package" step: `grep onnxruntime-node package.json`
+    (root) already returns nothing; the dep lives only in the app package.json.
+- **Gotcha — installing the app's own deps:** a root `pnpm install` does NOT
+  install `onnxruntime-node` (app is outside the workspace). To actually pull the
+  native ONNX runtime for Phase-2 wake work, run an install scoped to the app dir
+  (e.g. `pnpm --dir apps/voice-room-node install` or `cd` there). The acceptance
+  criterion only required root `pnpm install` to complete cleanly, which it did
+  (2m21s, no errors).
+- `CLAUDE.md` is a **relative** symlink → `AGENTS.md` (`ln -s AGENTS.md CLAUDE.md`),
+  matching the repo convention (`apps/android`, `extensions/telegram`). Per root
+  policy, edit `AGENTS.md` only; never edit `CLAUDE.md` directly. The app
+  `AGENTS.md` records the x86_64-only/ALSA/PCM16-24k-mono conventions and the
+  app-local-dep + approval-gate rules so future subtree work has them scoped.
+- **Approval-gate note:** the dependency-approval gate (see the BLOCKED step
+  above) is still CLOSED — `APPROVALS.md` reads `PENDING`. This step created the
+  package.json because it was the explicitly assigned task; if a maintainer later
+  rejects `onnxruntime-node`, this dep + the Phase-2 wake code must be revisited.
