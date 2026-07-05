@@ -159,3 +159,21 @@ scripts/tsdown-build.mjs` (exit 0); `dist/` has **no `dist/apps`** and
   apps stay excluded by omission from `files`; if a _new_ app ever needs the same
   guarantee, add its own `!apps/<name>/**` line. Do not rely on `apps/` being
   swept by a positive `files` pattern — none exists.
+
+## Step: verify onnxruntime-node does not leak into root package (done)
+
+- **Proof (both acceptance parts):**
+  - `grep -c onnxruntime-node package.json` (repo root) → `0`, exit `1` (no match).
+  - `grep -n onnxruntime-node apps/voice-room-node/package.json` →
+    `"onnxruntime-node": "1.27.0"` (line 11), exit `0`.
+- The dependency is declared **only** in the app package, pinned to an exact
+  version (`1.27.0`, no `^`/`~`) per the arch-locked prebuilt-binary convention.
+- **Why it stays clean:** `apps/voice-room-node` is NOT in the pnpm workspace
+  (`pnpm-workspace.yaml` lists only `.`, `ui`, `packages/*`, `extensions/*`), so
+  installing the app's deps never hoists `onnxruntime-node` into the root manifest.
+  Root `package.json` remains the sole non-app manifest to guard here.
+- **Gotcha for later steps:** the ONNX runtime is a plugin/app-local dep by
+  architecture rule (dependency ownership follows runtime ownership). Later steps
+  that import `onnxruntime-node` (e.g. `src/wake/onnx-sessions.ts`) must resolve it
+  from the app's own `node_modules`, not the repo root — do not add it to root
+  `package.json` to "fix" a resolution issue; run the install inside the app dir.
