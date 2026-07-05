@@ -222,3 +222,52 @@ error }` carries a human string.
   `apps/voice-room-node/**/\*.test.ts`files land in this shard automatically** —
 no per-file wiring needed;`pnpm test apps/voice-room-node/<file>` just works
   (verified: config.test.ts 8/8 green, test-projects.test.ts 182/182 green).
+
+## Step: src/audio/capture.ts (done)
+
+- `apps/voice-room-node/src/audio/capture.ts` = mic capture. `startCapture(opts)`
+  returns an `AudioCapture` (an `AsyncIterableIterator<Buffer>`): spawns
+  `arecord -t raw -f S16_LE -r 24000 -c 1 -D <device>` and yields fixed-size
+  PCM16 frames. `for await (const frame of capture)` (or `capture.frames()`) is
+  the consumer API. Playback (`playback.ts`) and the wake/session steps consume
+  these `Buffer` frames.
+- **`-t raw` is mandatory and non-obvious.** Real `arecord` defaults to a WAVE
+  container; without `-t raw` a 44-byte WAV header corrupts the first frame.
+  Kept raw so every stdout byte is sample data. (The spawn-flags test asserts the
+  exact argv, including `-t raw`.)
+- **Frame size:** `frameMs` option (default **20ms**). `frameBytesForMs(ms)` =
+  `24000*1*2*ms/1000`; 20ms = **960 bytes**. Only _whole_ frames are emitted; a
+  trailing partial (< frameBytes) is **dropped** on end. Format constants
+  exported: `CAPTURE_FORMAT` ("S16_LE"), `CAPTURE_SAMPLE_RATE` (24000),
+  `CAPTURE_CHANNELS` (1), `BYTES_PER_SAMPLE` (2). Sample-rate/format are fixed
+  (node-wide PCM16/24k/mono), NOT overridable — only `frameMs` is a knob.
+- **Backpressure is pull-based.** An internal frame queue; when it reaches
+  `highWaterMarkFrames` (default 16) with no consumer pulling, the child's stdout
+  is `.pause()`d so `arecord`'s pipe fills and it stops producing (no unbounded
+  buffering). Pulling below the mark `.resume()`s. Introspection helpers
+  `queuedFrames()` / `isPaused()` exist for tests.
+- **SIGTERM cleanup — two paths.** (1) `stop()` sends `SIGTERM` to the child,
+  discards buffered frames, and resolves once the child exits (awaits the child
+  `close` event). Idempotent; also invoked by iterator `return()` (loop break).
+  (2) `handleProcessSignals` (default **true**) registers a parent
+  `process.on("SIGTERM")` that calls `stop()`, so the node exiting never orphans
+  `arecord`; the listener is removed on stop/exit (no leak). **Tests pass
+  `handleProcessSignals: false`** except the one asserting the listener wiring.
+- **GOTCHA (cost me the most time): a _paused_ readable never emits `close`.**
+  On shutdown you must `resume()` (drain to EOF) _and stop re-pausing_ or the
+  child exits (exitCode 0) but the parent's `close` never fires and `stop()`
+  hangs. `terminate()` sets a `closing` flag; while closing, `ingest()` discards
+  bytes without re-pausing so stdout drains and `close` fires. Any later code
+  that pauses `arecord`/`aplay` stdio and then waits on `close`/`exit` must
+  resume-drain first. `playback.ts` will hit the same pattern for `aplay`.
+- **Testing the child:** the test writes a **Node** stub (shebang `#!/usr/bin/env
+node`, `chmod 0o755`) to a tmp dir and passes it as `binaryPath`; stub config
+  comes via the new `env` option (merged over `process.env`) — `ARECORD_ARGS_FILE`
+  (dump argv), `ARECORD_EMIT_BYTES` (emit N bytes then exit — for chunk-size
+  tests), `ARECORD_CHUNK_BYTES` + `ARECORD_TERM_FILE` (stream continuously,
+  honoring `write()` backpressure, write "term" on SIGTERM). Reuse this stub
+  shape for `playback.ts`'s fake `aplay`. `binaryPath` + `env` are the injection
+  seams — no need to mock `child_process`.
+- Verified: capture.test.ts 5/5 green (3× rerun, deterministic, ~260ms), full
+  app shard 13/13 (config 8 + capture 5), oxlint clean. No tsgo lane for the app
+  (no `apps/voice-room-node/tsconfig.json`; typed via Vitest, same as config.ts).

@@ -28,7 +28,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 
 ## Phase 1 — Device node skeleton (capture/playback + gateway + push-to-talk)
 
-- [ ] Implement `apps/voice-room-node/src/audio/capture.ts`: spawn `arecord -f S16_LE -r 24000 -c1 -D <device>`, emit fixed-size PCM16 frames, apply backpressure, and clean up the child on SIGTERM.
+- [x] Implement `apps/voice-room-node/src/audio/capture.ts`: spawn `arecord -f S16_LE -r 24000 -c1 -D <device>`, emit fixed-size PCM16 frames, apply backpressure, and clean up the child on SIGTERM.
       Done when: `pnpm test apps/voice-room-node/src/audio/capture.test.ts` passes — using a fake `arecord` stub script it asserts the spawn flags (`S16_LE`, `24000`, `1` channel), frame chunking size, backpressure, and clean SIGTERM shutdown.
 
 - [ ] Implement `apps/voice-room-node/src/audio/playback.ts`: spawn `aplay` for PCM16 24kHz, queue and drain base64 TTS frames, expose a barge-in `stop()` that flushes the queue and kills playback, and clean up on SIGTERM.
