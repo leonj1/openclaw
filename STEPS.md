@@ -37,7 +37,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 - [x] Implement `apps/voice-room-node/src/gateway/connect.ts`: connect to the gateway via `packages/gateway-client` using the config, and advertise capability `"talk"`, exposing a small typed handle (send PCM, receive TTS frames, close).
       Done when: `pnpm test apps/voice-room-node/src/gateway/connect.test.ts` passes — against a stub gateway it asserts the client connects and registers a node advertising cap `"talk"`.
 
-- [ ] Implement `apps/voice-room-node/src/main.ts` boot path: load config, open capture/playback, and call the gateway connect helper; wire clean shutdown of all three on SIGTERM. No push-to-talk or streaming yet.
+- [x] Implement `apps/voice-room-node/src/main.ts` boot path: load config, open capture/playback, and call the gateway connect helper; wire clean shutdown of all three on SIGTERM. No push-to-talk or streaming yet.
       Done when: `pnpm build` (or the app's build/typecheck lane) succeeds for `apps/voice-room-node`, and running `main.ts` against a local/stub gateway connects and registers a node advertising cap `"talk"` (observed in gateway logs or a stub assertion).
 
 - [ ] Add a manual push-to-talk trigger (e.g. stdin/signal) in `main.ts` that streams one captured utterance to the gateway and plays the TTS reply through playback.

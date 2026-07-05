@@ -383,3 +383,45 @@ sharedVitestConfig.resolve.alias }` (from `vitest.shared.config.ts`). Those
   mode/role `=== "node"`. No mock of `GatewayClient` — drives the real client end
   to end. Verified 1/1 green; full app shard 18/18 (config 8 + capture 5 +
   playback 4 + connect 1), oxlint clean.
+
+## Step: src/main.ts (done)
+
+- `apps/voice-room-node/src/main.ts` is the boot path. `bootVoiceRoomNode(deps?)`
+  loads config (`loadNodeConfig`), opens `startCapture`/`startPlayback`, then
+  `connectToGateway` advertising cap `"talk"`, and returns a `VoiceRoomNode`
+  with a single idempotent `shutdown()`. **No streaming yet** — capture frames
+  are NOT consumed and no PCM is sent; that's the next (push-to-talk) step.
+- **Central shutdown, not three racing handlers.** Capture and playback each
+  register their own `process.on("SIGTERM")` by default; main **disables** both
+  (`handleProcessSignals: false`) and installs ONE SIGTERM handler that stops
+  capture + playback + closes the gateway together (`Promise.allSettled`). The
+  next steps that consume capture/feed playback should keep this single-owner
+  shutdown — do not re-enable the children's built-in signal handlers.
+- **Failed-connect cleanup:** if `connectToGateway` throws, main reaps the
+  already-spawned capture/playback children (`allSettled([stop, stop])`) before
+  rethrowing, so a failed boot leaves no orphan `arecord`/`aplay`.
+- **Injection seams (`BootDeps`):** `env`, `startCapture`, `startPlayback`,
+  `connectToGateway`. Defaults are the real subsystems. Types are narrow —
+  factories return `Stoppable` (`stop(): Promise<void>`) and connect returns
+  `Closeable` (`close(): Promise<void>`); the real impls satisfy these by
+  return-type covariance. The boot **test injects fake stoppables** so it never
+  spawns real `arecord`/`aplay`, and drives the real `connectToGateway` against
+  a stub `WebSocketServer` (reuses the connect.test.ts stub-gateway shape).
+- **Direct-run guard:** `main()` runs only when the module is the process entry
+  (`import.meta.url === pathToFileURL(process.argv[1]).href`), so importing it
+  from the test never boots. On boot failure it logs and sets
+  `process.exitCode = 1` (no throw past the top).
+- **Acceptance:** the app has **no build/typecheck lane** (outside the pnpm
+  workspace, no `tsconfig.json`; typed via Vitest, same as config/capture/
+  playback). So acceptance was met via the **stub assertion** path:
+  `src/main.test.ts` boots against a stub gateway and asserts the handshake
+  advertised `caps === ["talk"]`, `mode`/`role === "node"`, plus that
+  `shutdown()` stops both audio children exactly once. Verified: main.test.ts
+  1/1 green, full app shard **19/19** (config 8 + capture 5 + playback 4 +
+  connect 1 + main 1), oxlint clean.
+- **Runtime gotcha carried over from connect.ts:** actually running `node main.js`
+  from the app dir still can't resolve `@openclaw/gateway-client` (app is outside
+  the workspace, package not linked). The test path is solved via the shard's
+  `@openclaw/*` source aliases. A real hardware run needs the workspace packages
+  built and resolvable (run from repo root, or add a path mapping) — decide when
+  packaging the systemd unit (Phase 4).
