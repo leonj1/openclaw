@@ -28,3 +28,23 @@ Cross-step decisions, conventions, and gotchas. Append as steps complete.
   and the fail-closed path fires on missing ALSA tools.
 - Later steps (APPROVALS.md) reference this script as the confirmation that
   x86_64 Linux was checked for the `onnxruntime-node` dependency.
+
+## Step: APPROVALS.md (done)
+
+- `apps/voice-room-node/APPROVALS.md` documents the `onnxruntime-node` dependency:
+  rationale (openWakeWord "Hey Jarvis" ONNX inference — mel/embedding/hey_jarvis
+  models), x86_64 Linux confirmed via `scripts/check-env.sh`, and an
+  `Approving PR/issue:` line initialized to `PENDING`.
+- **Convention:** the `Approving PR/issue:` line is the machine-checkable field.
+  A later step flips `PENDING` to the real approval URL (must become a
+  `https://github.com/openclaw/openclaw/...` URL). Keep the line label exactly
+  `Approving PR/issue:` so that step's grep/replace stays stable.
+- The next step writes `APPROVALS.request.md` (the pasteable issue/PR body) which
+  must name the **pinned version** of `onnxruntime-node`. APPROVALS.md itself
+  intentionally does NOT pin a version yet — the version is decided when
+  `package.json` is created (later Phase 0 step). If a version gets pinned, note
+  it in both places.
+- Repo policy (root AGENTS.md): new deps need explicit maintainer approval;
+  plugin/app-only deps stay app-local (declared only in the app's package.json,
+  excluded from core dist). APPROVALS.md restates this scope so the approval
+  request and the package.json step stay aligned.

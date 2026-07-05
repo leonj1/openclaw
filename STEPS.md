@@ -8,7 +8,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 - [x] Add `apps/voice-room-node/scripts/check-env.sh`: a preflight script that runs `arecord --version` and `aplay --version`, prints the machine arch (`uname -m`), and exits non-zero if ALSA tools are missing or the arch is not `x86_64`.
   Done when: `bash apps/voice-room-node/scripts/check-env.sh` on the target box exits 0 and prints the `arecord`/`aplay` versions and `x86_64`.
 
-- [ ] Create `apps/voice-room-node/APPROVALS.md` documenting the `onnxruntime-node` dependency: its rationale (openWakeWord ONNX inference), that x86_64 Linux was confirmed via `scripts/check-env.sh`, and an explicit `Approving PR/issue:` field initialized to `PENDING`.
+- [x] Create `apps/voice-room-node/APPROVALS.md` documenting the `onnxruntime-node` dependency: its rationale (openWakeWord ONNX inference), that x86_64 Linux was confirmed via `scripts/check-env.sh`, and an explicit `Approving PR/issue:` field initialized to `PENDING`.
   Done when: `apps/voice-room-node/APPROVALS.md` exists, names `onnxruntime-node`, states x86_64 Linux was confirmed, and contains an `Approving PR/issue:` line.
 
 - [ ] Add a dependency-approval request draft at `apps/voice-room-node/APPROVALS.request.md` (issue/PR body) that names `onnxruntime-node`, its pinned version, arch (x86_64 Linux), and rationale, and asks a maintainer to approve the dependency addition.
