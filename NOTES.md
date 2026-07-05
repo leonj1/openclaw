@@ -425,3 +425,56 @@ sharedVitestConfig.resolve.alias }` (from `vitest.shared.config.ts`). Those
   `@openclaw/*` source aliases. A real hardware run needs the workspace packages
   built and resolvable (run from repo root, or add a path mapping) — decide when
   packaging the systemd unit (Phase 4).
+
+## Step: manual push-to-talk trigger (done)
+
+- Extended `main.ts` (same file, no new module) with a manual push-to-talk
+  trigger. `VoiceRoomNode` now exposes `startUtterance()` (press) and
+  `endUtterance()` (release) alongside `shutdown()`. Direct-run `main()` wires
+  **SIGUSR1 → startUtterance, SIGUSR2 → endUtterance** (the node is headless, no
+  keyboard, so an utterance is bracketed by two signals). Tests drive the two
+  methods directly.
+- **Streaming model — one long-lived capture consumer, gated by a `streaming`
+  flag.** A single `pump` async-loop consumes `capture.frames()` for the node's
+  whole lifetime; it forwards a frame to `gateway.sendPcm(frame)` only while
+  `streaming === true`, otherwise drops it. Press flips `streaming` on (after the
+  session exists), release flips it off. This avoids starting/stopping `arecord`
+  per utterance (capture stays warm) — Phase-2 `talk-node.ts` wake flow can keep
+  this same "capture always on, gate forwarding" shape.
+- **Talk-session lifecycle is owned here (for now).** `ensureTalkSession()` lazily
+  fires `talk.session.create` **once** on the first press and binds the returned
+  `sessionId` via `gateway.setTalkSession(id)` (so `sendPcm`'s
+  `talk.session.appendAudio` targets it). The session is **reused** across
+  press/release cycles (release does NOT close it) and is closed once on
+  `shutdown()` via `talk.session.close`. Create params:
+  `{ mode: "realtime", transport: "gateway-relay", brain: "agent-consult" }` —
+  `realtime`/`gateway-relay` is the only transport whose `appendAudio` the gateway
+  accepts and that emits `talk.event` audio back (see
+  `src/gateway/server-methods/talk-session.ts`). Phase-2 talk-node will take over
+  this create/close ownership.
+- **TTS reply path:** `gateway.onTtsFrame((b64) => playback.enqueue(b64))` is wired
+  at boot (not gated by streaming) so replies play whenever they arrive, including
+  after release. `onTtsFrame`↔`enqueue` pipe base64 directly (playback decodes),
+  as designed in the connect.ts step.
+- **Shutdown ordering matters:** `shutdown()` sets `shuttingDown`, clears
+  `streaming`, removes the SIGTERM listener, unsubscribes TTS, then **closes the
+  talk session first** (best-effort, errors swallowed) before
+  `Promise.allSettled([capture.stop(), playback.stop(), gateway.close(), pump])`.
+  Awaiting `pump` in that settle set lets the capture loop unwind cleanly.
+  `startUtterance` re-checks `shuttingDown` after the `await create` so a shutdown
+  racing an in-flight press can't leave `streaming` stuck on.
+- **Acceptance (stub-assertion path, no build lane — app is outside the
+  workspace):** `main.test.ts` gained a second test, "push-to-talk streams
+  captured PCM and plays the TTS reply". The stub gateway now hands out a session
+  id on `talk.session.create`, records `appendAudio` base64 frames, answers the
+  **first** append with a `talk.event` audio reply, and records
+  `talk.session.close`. The test presses, waits for ≥3 appended frames, asserts
+  the TTS reply reached the playback stub, releases and asserts no further frames
+  append, then shuts down and asserts the session was closed. The `fakeCapture`
+  stub streams non-empty 2-byte frames every 3ms so the pump always has audio.
+- **Gotcha — `no-promise-executor-return` oxlint rule:** inline
+  `new Promise((resolve) => setTimeout(resolve, ms))` fails oxlint (the arrow
+  implicitly returns the timer handle). Use the existing block-body `delay(ms)`
+  helper (or a `{ ... }` executor) instead. Fixed three occurrences in the test.
+- Verified: `main.test.ts` 2/2 green, full app shard green (exit 0), oxlint clean
+  on `main.ts`/`main.test.ts`.
