@@ -271,3 +271,55 @@ node`, `chmod 0o755`) to a tmp dir and passes it as `binaryPath`; stub config
 - Verified: capture.test.ts 5/5 green (3× rerun, deterministic, ~260ms), full
   app shard 13/13 (config 8 + capture 5), oxlint clean. No tsgo lane for the app
   (no `apps/voice-room-node/tsconfig.json`; typed via Vitest, same as config.ts).
+
+## Step: src/audio/playback.ts (done)
+
+- `apps/voice-room-node/src/audio/playback.ts` = TTS playback. `startPlayback(opts)`
+  returns an `AudioPlayback` that spawns `aplay -t raw -f S16_LE -r 24000 -c 1 -D
+<device>` and feeds **base64-encoded** PCM16 frames into `aplay` stdin.
+  **Public API the session/talk-node steps consume:**
+  - `enqueue(frameBase64: string): void` — decode base64 → Buffer, queue, kick the
+    writer. No-op once stopped and skips empty frames. TTS frames arrive base64 from
+    the gateway (`connect.ts`), so `enqueue` takes base64 directly — decode is here,
+    not at the call site.
+  - `stop(): Promise<void>` — **barge-in**: drop the whole queue and SIGTERM `aplay`
+    so speech halts mid-utterance; resolves once the child exits. Idempotent (same
+    `stopping` latch shape as capture). This is the barge-in hook Phase-2
+    `talk-node.ts` calls when the user interrupts.
+  - `drained(): Promise<void>` — resolves when the queue has fully flushed to `aplay`
+    (or immediately after stop). Talk-node's `→idle on stream end` can await this.
+  - `pendingFrames()` / `pid` — introspection for tests/backpressure.
+- **Mirror of capture, but the pipe direction flips.** Capture reads `arecord`
+  stdout with pull-based backpressure; playback writes `aplay` stdin with
+  push-based backpressure. The writer is a single-flight `pump()`: `write()` a
+  frame, and if it returns `false` (child stdin buffer full) wait for the `drain`
+  event before the next frame — never write two frames concurrently, so enqueue
+  order == playback order. `setImmediate` between frames avoids deep recursion.
+- **`-t raw` is mandatory** (same reason as capture): without it `aplay` expects a
+  WAV container on stdin and would misread raw PCM header bytes. The flags test
+  asserts the exact argv incl. `-t raw`. Format constants exported: `PLAYBACK_FORMAT`
+  ("S16_LE"), `PLAYBACK_SAMPLE_RATE` (24000), `PLAYBACK_CHANNELS` (1). Format/rate
+  are fixed node-wide, not overridable.
+- **EPIPE is expected on barge-in.** Killing `aplay` mid-write breaks the pipe; an
+  in-flight `write` then emits `error` (EPIPE). `stdin.on("error", () => {})` +
+  `child.on("error", () => {})` swallow it so a discarded frame never crashes the
+  node. Any future writer to a killable child stdin needs the same guard.
+- **`aplay` self-exit is handled.** A `child` `close` listener also latches
+  `closing`, empties the queue, and releases `drained()` waiters — so a device
+  error / EOF exit doesn't leave `enqueue`/`drained` callers hanging.
+- **SIGTERM parent handler:** same pattern as capture — `handleProcessSignals`
+  (default true) registers `process.on("SIGTERM")` → `stop()`, removed on
+  stop/exit (no leak). Tests pass `handleProcessSignals: false` except the wiring
+  test.
+- **Fake `aplay` stub** (reuse this shape for later playback-touching tests): Node
+  shebang script (`chmod 0o755`) injected via `binaryPath` + `env`. Env knobs:
+  `APLAY_ARGS_FILE` (dump argv), `APLAY_OUT_FILE` (append every stdin byte → assert
+  ordered draining), `APLAY_CHUNK_DELAY_MS` (pause/resume-throttle stdin reads so
+  the parent's writes back up and a mid-stream `stop()` leaves bytes unplayed),
+  `APLAY_TERM_FILE` (write "term" on SIGTERM → clean-shutdown proof). No
+  `child_process` mock needed.
+- **GOTCHA — the barge-in test is timing-based.** It enqueues 40×16KB frames into a
+  throttled stub, waits until some bytes played AND frames are still queued, then
+  `stop()` and asserts `0 < delivered < total` and `pendingFrames()===0`. Large
+  total (640KB) vs a ~64KB pipe + 40ms throttle keeps `delivered < total`
+  comfortable. Verified 4/4 green ×3 reruns (deterministic, ~390ms), oxlint clean.

@@ -31,7 +31,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 - [x] Implement `apps/voice-room-node/src/audio/capture.ts`: spawn `arecord -f S16_LE -r 24000 -c1 -D <device>`, emit fixed-size PCM16 frames, apply backpressure, and clean up the child on SIGTERM.
       Done when: `pnpm test apps/voice-room-node/src/audio/capture.test.ts` passes — using a fake `arecord` stub script it asserts the spawn flags (`S16_LE`, `24000`, `1` channel), frame chunking size, backpressure, and clean SIGTERM shutdown.
 
-- [ ] Implement `apps/voice-room-node/src/audio/playback.ts`: spawn `aplay` for PCM16 24kHz, queue and drain base64 TTS frames, expose a barge-in `stop()` that flushes the queue and kills playback, and clean up on SIGTERM.
+- [x] Implement `apps/voice-room-node/src/audio/playback.ts`: spawn `aplay` for PCM16 24kHz, queue and drain base64 TTS frames, expose a barge-in `stop()` that flushes the queue and kills playback, and clean up on SIGTERM.
       Done when: `pnpm test apps/voice-room-node/src/audio/playback.test.ts` passes — with a fake `aplay` stub it asserts format flags, ordered frame draining, that `stop()` halts output mid-queue, and clean SIGTERM.
 
 - [ ] Implement `apps/voice-room-node/src/gateway/connect.ts`: connect to the gateway via `packages/gateway-client` using the config, and advertise capability `"talk"`, exposing a small typed handle (send PCM, receive TTS frames, close).
