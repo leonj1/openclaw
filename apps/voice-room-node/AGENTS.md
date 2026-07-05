@@ -21,6 +21,18 @@ subtree ("Hey Jarvis" voice-room device node).
   version identical across `package.json`, `APPROVALS.md`, and
   `APPROVALS.request.md` (currently `1.27.0`).
 
+## Wake models
+
+- The wake layer uses three ONNX artifacts from the openWakeWord project
+  (`github.com/dscripka/openWakeWord`): `hey_jarvis_v0.1.onnx`,
+  `melspectrogram.onnx`, and `embedding_model.onnx`. Fetch them with
+  `scripts/fetch-models.sh` into `models/` (git-ignored; not committed).
+- These models are licensed **Apache-2.0** (openWakeWord's license). Keep that
+  attribution here when redistributing or documenting them.
+- The models are trained at **16kHz**, but this node captures at 24kHz.
+  `src/wake/features.ts` resamples 24k -> 16k before the mel model; do not feed
+  24kHz audio to the wake sessions.
+
 ## Audio format
 
 - Audio format standard across the node: **PCM16, 24kHz, mono**

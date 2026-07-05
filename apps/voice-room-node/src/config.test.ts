@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadNodeConfig, parseNodeConfig } from "./config.ts";
+import { loadNodeConfig, loadWakeListenConfig, parseNodeConfig } from "./config.ts";
 
 const validInput = {
   gateway: { url: "wss://gateway.example.test/ws", tokenEnv: "MY_TOKEN" },
@@ -106,5 +106,66 @@ describe("loadNodeConfig", () => {
       throw new Error("expected rejection");
     }
     expect(result.error).toMatch(/invalid json/i);
+  });
+});
+
+describe("loadWakeListenConfig", () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  function writeConfigFile(contents: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-room-wake-config-"));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, "voice-room.json");
+    fs.writeFileSync(filePath, contents);
+    return filePath;
+  }
+
+  it("loads with no gateway block and applies audio + wake defaults", () => {
+    // Layer 1 runs standalone: a config with no gateway (or no file at all) must
+    // still load. Point at a missing path so only schema defaults apply.
+    const result = loadWakeListenConfig({
+      OPENCLAW_VOICE_ROOM_CONFIG: path.join(os.tmpdir(), "voice-room-absent.json"),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
+    expect(result.config.audio.captureDevice).toBe("default");
+    expect(result.config.wake.threshold).toBe(0.5);
+  });
+
+  it("reads audio device + wake threshold and ignores an unrelated gateway block", () => {
+    const filePath = writeConfigFile(
+      JSON.stringify({
+        gateway: { url: "wss://ignored.example.test" },
+        audio: { captureDevice: "plughw:CARD=Anker,DEV=0" },
+        wake: { threshold: 0.7 },
+      }),
+    );
+    const result = loadWakeListenConfig({ OPENCLAW_VOICE_ROOM_CONFIG: filePath });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
+    expect(result.config.audio.captureDevice).toBe("plughw:CARD=Anker,DEV=0");
+    expect(result.config.wake.threshold).toBe(0.7);
+  });
+
+  it("lets an env var override the capture device", () => {
+    const result = loadWakeListenConfig({
+      OPENCLAW_VOICE_ROOM_CONFIG: path.join(os.tmpdir(), "voice-room-absent.json"),
+      OPENCLAW_VOICE_ROOM_CAPTURE_DEVICE: "plughw:CARD=USB,DEV=0",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
+    expect(result.config.audio.captureDevice).toBe("plughw:CARD=USB,DEV=0");
   });
 });

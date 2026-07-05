@@ -14,6 +14,24 @@ import { z } from "zod";
 // are ALSA identifiers such as "default" or "plughw:CARD=Anker,DEV=0".
 const AlsaDeviceSchema = z.string().min(1);
 
+// Audio + wake sections are shared between the full node config and the Layer 1
+// wake-listen config, so they are named schemas reused by both below.
+const AudioConfigSchema = z
+  .object({
+    captureDevice: AlsaDeviceSchema.default("default"),
+    playbackDevice: AlsaDeviceSchema.default("default"),
+  })
+  .strict()
+  .prefault({});
+
+const WakeConfigSchema = z
+  .object({
+    // openWakeWord score in [0,1]; crossings above this fire a wake event.
+    threshold: z.number().min(0).max(1).default(0.5),
+  })
+  .strict()
+  .prefault({});
+
 export const NodeConfigSchema = z
   .object({
     gateway: z
@@ -25,20 +43,8 @@ export const NodeConfigSchema = z
         tokenEnv: z.string().min(1).default("OPENCLAW_VOICE_ROOM_TOKEN"),
       })
       .strict(),
-    audio: z
-      .object({
-        captureDevice: AlsaDeviceSchema.default("default"),
-        playbackDevice: AlsaDeviceSchema.default("default"),
-      })
-      .strict()
-      .prefault({}),
-    wake: z
-      .object({
-        // openWakeWord score in [0,1]; crossings above this fire a wake event.
-        threshold: z.number().min(0).max(1).default(0.5),
-      })
-      .strict()
-      .prefault({}),
+    audio: AudioConfigSchema,
+    wake: WakeConfigSchema,
     endpointing: z
       .object({
         // Trailing silence that ends an utterance while streaming.
@@ -61,6 +67,28 @@ export type NodeConfigResult =
 
 export function parseNodeConfig(input: unknown): NodeConfigResult {
   const result = NodeConfigSchema.safeParse(input);
+  if (!result.success) {
+    return { ok: false, error: z.prettifyError(result.error) };
+  }
+  return { ok: true, config: result.data };
+}
+
+// Layer 1 wake-listen never connects to the gateway, so it must load from the
+// same file/env without requiring a `gateway` block. It reads only the audio +
+// wake sections; any other keys (gateway/endpointing) are ignored, so a full
+// node config also loads here.
+export const WakeListenConfigSchema = z
+  .object({ audio: AudioConfigSchema, wake: WakeConfigSchema })
+  .strip();
+
+export type WakeListenConfigData = z.infer<typeof WakeListenConfigSchema>;
+
+export type WakeListenConfigResult =
+  | { ok: true; config: WakeListenConfigData }
+  | { ok: false; error: string };
+
+export function parseWakeListenConfig(input: unknown): WakeListenConfigResult {
+  const result = WakeListenConfigSchema.safeParse(input);
   if (!result.success) {
     return { ok: false, error: z.prettifyError(result.error) };
   }
@@ -127,8 +155,14 @@ function readConfigFile(configPath: string): NodeConfigResult | Record<string, u
   }
 }
 
-// Loads the node config from file + environment overrides and validates it.
-export function loadNodeConfig(env: NodeJS.ProcessEnv = process.env): NodeConfigResult {
+// Merges the on-disk config file with env overrides into a raw object ready for
+// schema validation. Shared by `loadNodeConfig` and `loadWakeListenConfig` so
+// both read identical file/env sources; only the schema they validate differs.
+type MergedConfigResult =
+  | { ok: true; raw: Record<string, unknown> }
+  | { ok: false; error: string };
+
+function readMergedConfig(env: NodeJS.ProcessEnv): MergedConfigResult {
   const configPath = resolveConfigPath(env);
   const fileData = readConfigFile(configPath);
   if ("ok" in fileData) {
@@ -144,12 +178,33 @@ export function loadNodeConfig(env: NodeJS.ProcessEnv = process.env): NodeConfig
     ...(fileData.audio as Record<string, unknown> | undefined),
     ...(overrides.audio as Record<string, unknown> | undefined),
   };
-  const merged: Record<string, unknown> = { ...fileData };
+  const raw: Record<string, unknown> = { ...fileData };
   if (Object.keys(gateway).length > 0) {
-    merged.gateway = gateway;
+    raw.gateway = gateway;
   }
   if (Object.keys(audio).length > 0) {
-    merged.audio = audio;
+    raw.audio = audio;
   }
-  return parseNodeConfig(merged);
+  return { ok: true, raw };
+}
+
+// Loads the full node config from file + environment overrides and validates it.
+export function loadNodeConfig(env: NodeJS.ProcessEnv = process.env): NodeConfigResult {
+  const merged = readMergedConfig(env);
+  if (!merged.ok) {
+    return merged;
+  }
+  return parseNodeConfig(merged.raw);
+}
+
+// Loads just the audio + wake sections for the standalone Layer 1 wake-listen
+// entry, which runs without a gateway.
+export function loadWakeListenConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): WakeListenConfigResult {
+  const merged = readMergedConfig(env);
+  if (!merged.ok) {
+    return merged;
+  }
+  return parseWakeListenConfig(merged.raw);
 }

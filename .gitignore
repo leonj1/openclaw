@@ -270,3 +270,8 @@ extensions/diffs-language-pack/assets/viewer-runtime.js
 /.opengrep-out/
 /.crabbox-artifacts
 .comux*
+
+# voice-room-node: downloaded openWakeWord ONNX models (fetch-models.sh) and the
+# out-of-workspace app's own npm lockfile. Both are reproducible, not committed.
+/apps/voice-room-node/models/
+/apps/voice-room-node/package-lock.json
