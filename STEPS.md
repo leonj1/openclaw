@@ -34,7 +34,7 @@ condition. Do not mark a step done until its `Done when:` check passes.
 - [x] Implement `apps/voice-room-node/src/audio/playback.ts`: spawn `aplay` for PCM16 24kHz, queue and drain base64 TTS frames, expose a barge-in `stop()` that flushes the queue and kills playback, and clean up on SIGTERM.
       Done when: `pnpm test apps/voice-room-node/src/audio/playback.test.ts` passes — with a fake `aplay` stub it asserts format flags, ordered frame draining, that `stop()` halts output mid-queue, and clean SIGTERM.
 
-- [ ] Implement `apps/voice-room-node/src/gateway/connect.ts`: connect to the gateway via `packages/gateway-client` using the config, and advertise capability `"talk"`, exposing a small typed handle (send PCM, receive TTS frames, close).
+- [x] Implement `apps/voice-room-node/src/gateway/connect.ts`: connect to the gateway via `packages/gateway-client` using the config, and advertise capability `"talk"`, exposing a small typed handle (send PCM, receive TTS frames, close).
       Done when: `pnpm test apps/voice-room-node/src/gateway/connect.test.ts` passes — against a stub gateway it asserts the client connects and registers a node advertising cap `"talk"`.
 
 - [ ] Implement `apps/voice-room-node/src/main.ts` boot path: load config, open capture/playback, and call the gateway connect helper; wire clean shutdown of all three on SIGTERM. No push-to-talk or streaming yet.

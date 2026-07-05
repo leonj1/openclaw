@@ -10,12 +10,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { loadPatternListFromEnv } from "./vitest.pattern-file.ts";
+import { sharedVitestConfig } from "./vitest.shared.config.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const includeFromEnv = loadPatternListFromEnv("OPENCLAW_VITEST_INCLUDE_FILE");
 
 export default defineConfig({
   root: repoRoot,
+  // Borrow the shared `@openclaw/*` source aliases so the node can import
+  // `@openclaw/gateway-client` (and its gateway-protocol deps) by package name.
+  // The app is outside the pnpm workspace, so those packages are not linked
+  // under node_modules; the aliases point imports at the package `src/`. Only
+  // the alias list is reused — the app shard keeps its isolated test settings.
+  resolve: { alias: sharedVitestConfig.resolve.alias },
   test: {
     name: "apps-voice-room",
     include: includeFromEnv ?? ["apps/voice-room-node/**/*.test.ts"],

@@ -323,3 +323,63 @@ node`, `chmod 0o755`) to a tmp dir and passes it as `binaryPath`; stub config
   `stop()` and asserts `0 < delivered < total` and `pendingFrames()===0`. Large
   total (640KB) vs a ~64KB pipe + 40ms throttle keeps `delivered < total`
   comfortable. Verified 4/4 green ×3 reruns (deterministic, ~390ms), oxlint clean.
+
+## Step: src/gateway/connect.ts (done)
+
+- `apps/voice-room-node/src/gateway/connect.ts` = gateway connection.
+  `connectToGateway({ config, env?, connectTimeoutMs? })` connects via the shared
+  **`@openclaw/gateway-client`** `GatewayClient` and resolves a `GatewayTalkHandle`
+  once the gateway sends `hello-ok`. Rejects (and stops the client) on connect
+  error or hello timeout (default 10s).
+- **Advertised on connect:** `mode: GATEWAY_CLIENT_MODES.NODE` ("node"),
+  `role: "node"`, `caps: [TALK_CAPABILITY]` where `TALK_CAPABILITY = "talk"`
+  (exported). This is the string the gateway's talk-node detection matches
+  (`src/gateway/server-talk-nodes.ts`) — the later `server-talk-nodes` test step
+  asserts a `"talk"`-cap node is talk-capable. Keep it exactly `"talk"`.
+- **`GatewayTalkHandle` (public API later steps consume):**
+  - `client: GatewayClient` — the connected client; the talk phase drives
+    `talk.session.*` RPCs on it directly (create/turn/close lifecycle is NOT owned
+    here).
+  - `setTalkSession(sessionId | null)` — bind the active talk session id that
+    `sendPcm` targets; clear with `null`.
+  - `sendPcm(frame: Buffer)` — best-effort uplink: base64-encodes the PCM16 frame
+    and fires `talk.session.appendAudio` RPC `{ sessionId, audioBase64 }`. **No-op
+    when no session bound or frame empty**; RPC rejects are swallowed so a dropped
+    audio frame never crashes capture. Takes a raw `Buffer` (capture.ts yields
+    Buffers) — encode happens here.
+  - `onTtsFrame(listener)` — subscribe to base64 TTS frames; returns unsubscribe.
+    Frames come from gateway `talk.event` events with payload
+    `{ type: "audio", audioBase64 }`. **These base64 strings feed straight into
+    `playback.enqueue(frameBase64)`** (playback decodes base64) — the two APIs are
+    designed to pipe directly: `handle.onTtsFrame((b64) => playback.enqueue(b64))`.
+  - `close()` — clears listeners + `client.stopAndWait()`.
+- **Wire contract (real gateway names, verified against the client, NOT invented):**
+  uplink RPC method `talk.session.appendAudio`; downlink event `talk.event` with
+  `type: "audio"`. main.ts / talk-node must create the talk session on `client`
+  and pass its id to `setTalkSession` before `sendPcm` does anything.
+- **GOTCHA — the app is outside the pnpm workspace, so `@openclaw/gateway-client`
+  is NOT linked under `node_modules`.** For the Vitest shard to resolve the
+  package by name, `test/vitest/vitest.apps-voice-room.config.ts` now borrows the
+  shared `@openclaw/*` source aliases: `resolve: { alias:
+sharedVitestConfig.resolve.alias }` (from `vitest.shared.config.ts`). Those
+  aliases point `@openclaw/gateway-client` / `@openclaw/gateway-protocol` imports
+  at the package `src/`. **main.ts (Phase-1 next step) will hit the same wall at
+  _runtime_** — plain `node`/`tsx` cannot resolve `@openclaw/gateway-client` from
+  the app dir. Options for that step: run the app from repo root with the workspace
+  packages built (`packages/gateway-client/dist` exists), add a path mapping, or
+  vendor/build. Decide there; the test path is already solved via the alias.
+- **Client construction detail:** token is read from
+  `env[config.gateway.tokenEnv]` (never from config directly, per config.ts note)
+  and passed as `token` (or `undefined` when empty). `onHelloOk` resolves the
+  connect promise; `onConnectError` rejects it; failed connect stops the client in
+  a `try/catch` around `await connected` (kept out of the promise executor so
+  `client` stays `const` and lint-clean — no forward `let`).
+- **Test stub** (`connect.test.ts`, reuse shape for other gateway tests): a real
+  `ws` `WebSocketServer` on a free port that plays the actual handshake — sends a
+  `connect.challenge` event, then on the `connect` method frame records
+  `params.caps` / `params.client.mode` / `params.role` and replies `res ok` with a
+  minimal `hello-ok` payload (`protocol: 2`, empty presence/health snapshot,
+  `tickIntervalMs: 30_000` to keep the watchdog quiet). Asserts `caps === ["talk"]`,
+  mode/role `=== "node"`. No mock of `GatewayClient` — drives the real client end
+  to end. Verified 1/1 green; full app shard 18/18 (config 8 + capture 5 +
+  playback 4 + connect 1), oxlint clean.
