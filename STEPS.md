@@ -7,11 +7,15 @@ until the current layer's confirmation gate passes.
 The three layers, in order:
 
 1. **Layer 1 — Wake-word listening.** A process listens on the mic and reacts
-   when it hears "Hey Jarvis". Nothing is sent to OpenClaw yet.
+   when it hears "Hey Jarvis". Nothing is sent to OpenClaw yet. **(Done.)**
 2. **Layer 2 — Message to OpenClaw.** After a wake, the follow-up utterance is
-   streamed to the gateway and the spoken reply is played back.
-3. **Layer 3 — Speaker-origin brevity.** OpenClaw knows the question came from
-   the speaker and answers succinctly (≤2 sentences, plain speech).
+   transcribed on-device (ElevenLabs STT), a brevity instruction is prepended, and
+   the text is sent to OpenClaw (`chat.send`/`agent.wait`). A royalty-free
+   "thinking" wait loop plays from utterance-end until the reply arrives, then the
+   succinct reply is spoken back (ElevenLabs TTS). Because the brevity ask is
+   prepended here, the old server-side Layer 3 is folded into this layer.
+3. **Layer 3 — (folded into Layer 2).** Optional later hardening only: move the
+   brevity ask from a client-side prepend to a server-side session persona.
 
 Each step is a single completable unit ending in a concrete `Done when:` check.
 Do not mark a step done until its check passes.
@@ -132,7 +136,7 @@ OpenClaw — this layer only proves detection works on real audio.
       wake latency and any false accepts over ~2 minutes into
       `apps/voice-room-node/voice-room.e2e.md`.
       Confirmed 2026-07-05 on the PowerConf: every "Hey Jarvis" printed `WAKE
-    score=…`. Latency + false-accept soak noted as optional follow-up in the
+  score=…`. Latency + false-accept soak noted as optional follow-up in the
       runbook.
       Done when: `voice-room.e2e.md` records a live run where every "Hey Jarvis"
       printed a wake within the target latency and quiet/other speech produced
@@ -141,106 +145,138 @@ OpenClaw — this layer only proves detection works on real audio.
 
 ---
 
-## Layer 2 — Message to OpenClaw (full spoken round trip)
+## Layer 2 — Message to OpenClaw (turn-based, wait-music + brevity)
 
-Goal: after a wake, capture the follow-up utterance, stream it to the gateway so
-OpenClaw processes it, and play the spoken reply back. Reply verbosity is not
-constrained yet — a long answer here is fine; brevity is Layer 3.
+Goal: after a wake, capture the follow-up utterance, transcribe it on-device
+(ElevenLabs), prepend a 1–2 sentence brevity instruction, send it to OpenClaw as
+a text turn (`chat.send` → `agent.wait`), play a royalty-free "thinking" wait loop
+from utterance-end until the reply lands, then speak the succinct reply back
+(ElevenLabs TTS). Needs `ELEVENLABS_API_KEY` and a reachable gateway.
 
-- [ ] Implement `apps/voice-room-node/src/session/talk-node.ts` state-machine
-      skeleton: states `idle → listening → streaming → speaking → idle` with an
-      explicit transition API and no external I/O.
+Architecture notes (verified in the gateway source):
+
+- The gateway realtime relay is audio↔audio and the transcription relay is
+  browser g711/8kHz STT-only — neither is a clean "text in → text out" seam, so
+  STT + TTS run **on-device via ElevenLabs** and the turn goes through the generic
+  `chat.send` (returns `runId`) + `agent.wait` (blocks to terminal) RPCs.
+- `agent.wait` returning terminal is the "reply ready" signal that stops the wait
+  loop. Reuse `playback.stop()` (Layer 1 barge-in) to flush it.
+
+### Wait sound + audio helpers
+
+- [x] Add `apps/voice-room-node/scripts/fetch-wait-sound.sh`: download a
+      royalty-free / Creative-Commons quiz/"thinking" loop (a Jeopardy-style
+      substitute, **not** the copyrighted theme), convert it to 24kHz mono PCM16 at
+      `apps/voice-room-node/assets/wait-loop.wav` (git-ignored), and record the
+      source URL + license in the app AGENTS.md. Detect missing `ffmpeg`/`sox` and
+      exit with an install hint.
+      Done when: running the script writes `assets/wait-loop.wav` (verified 24kHz
+      mono PCM16), AGENTS.md cites the source/license, and a missing converter
+      prints an actionable error. Add `assets/wait-loop.wav` to root `.gitignore`.
+
+- [x] Implement `apps/voice-room-node/src/audio/wait-loop.ts`: given a WAV path and
+      a playback handle, decode once and enqueue frames on repeat until `stop()`,
+      so the loop plays continuously for an arbitrarily long wait.
+      Done when: `pnpm test apps/voice-room-node/src/audio/wait-loop.test.ts` passes
+      — frames keep enqueuing past one clip length (it loops) and `stop()` halts
+      enqueue promptly.
+
+- [x] Implement `apps/voice-room-node/src/audio/endpoint.ts`: consume capture
+      frames after a wake, buffer the PCM utterance, and resolve it when trailing
+      silence exceeds `endpointing.silenceMs` or the `maxUtteranceMs` cap is hit.
+      Done when: `pnpm test apps/voice-room-node/src/audio/endpoint.test.ts`
+      passes — a speech-then-silence fixture resolves at the silence boundary and a
+      non-stop stream resolves at the `maxUtteranceMs` cap.
+
+### On-device STT / TTS / agent turn
+
+- [x] Implement `apps/voice-room-node/src/stt/transcribe.ts`: send a PCM16 24kHz
+      utterance to ElevenLabs speech-to-text and return the transcript string; key
+      from `ELEVENLABS_API_KEY`, HTTP client injectable for tests.
+      Done when: `pnpm test apps/voice-room-node/src/stt/transcribe.test.ts` passes
+      with a stubbed client returning a known transcript; it errors clearly when
+      the key is absent.
+
+- [x] Implement `apps/voice-room-node/src/agent/brevity.ts`: export the brevity
+      preamble constant and `prependBrevity(text)` that returns the preamble + the
+      user's transcript (ask for a 1–2 sentence, plain-text spoken answer).
+      Done when: `pnpm test apps/voice-room-node/src/agent/brevity.test.ts` passes —
+      the preamble prefixes the message and the original transcript is preserved
+      verbatim.
+
+- [x] Implement `apps/voice-room-node/src/agent/request.ts`: over the gateway
+      client, `chat.send` the prepended text and `agent.wait` for the terminal
+      result, returning the reply text; typed params/result and a bounded timeout.
+      Done when: `pnpm test apps/voice-room-node/src/agent/request.test.ts` passes
+      against a stub gateway client — `chat.send` receives the prepended text and
+      the reply text is read from the `agent.wait` terminal result.
+
+- [x] Implement `apps/voice-room-node/src/tts/synthesize.ts`: ElevenLabs TTS of the
+      reply text into base64 PCM16 24kHz frames for `playback.ts`; voice/model ids
+      from config with defaults, key from env, client injectable.
+      Done when: `pnpm test apps/voice-room-node/src/tts/synthesize.test.ts` passes
+      with a stubbed client yielding non-empty ordered frames.
+
+### Orchestrator + wiring
+
+- [x] Implement `apps/voice-room-node/src/session/talk-node.ts` state machine:
+      `idle → capturing → thinking → speaking → idle`. On wake: capture+endpoint →
+      STT → `prependBrevity` → **start wait-loop** + agent request → on reply
+      **stop wait-loop** → TTS → playback → idle. Mute the mic while `thinking`/
+      `speaking` so the wait loop and TTS cannot re-trigger wake.
       Done when: `pnpm test apps/voice-room-node/src/session/talk-node.test.ts`
-      passes the transition cases — `idle→listening` on wake and `→idle` on end.
+      passes with stubbed STT/agent/TTS — state order is correct and the mic is
+      gated during `thinking`/`speaking`.
 
-- [ ] Extend `talk-node.ts`: on a `WakeEvent`, open a Talk session via the
-      (mocked) gateway client and stream captured PCM (`listening→streaming`);
-      send no PCM before a wake event.
-      Done when: `talk-node.test.ts` passes assertions that PCM streams after wake
-      and that no PCM is sent to the gateway before a wake event.
+- [x] Assert the wait-music timing contract in `talk-node.test.ts`: the wait loop
+      starts only after the utterance is submitted (post-STT, at `chat.send`) and
+      stops the instant the reply text arrives, before TTS playback begins — never
+      before submit, never overlapping the spoken reply.
+      Done when: `talk-node.test.ts` asserts wait-loop start-after-submit and
+      stop-before-reply ordering.
 
-- [ ] Extend `talk-node.ts`: on a TTS frame transition `→speaking` and play audio
-      via `playback.ts`, then `→idle` on stream end; endpoint the utterance on a
-      silence timeout (`streaming` ends after `endpointing.silenceMs`); support
-      barge-in (stop playback) and gate the mic while `speaking` so TTS cannot
-      re-trigger wake.
-      Done when: `talk-node.test.ts` passes the full suite — TTS frame drives
-      `→speaking` + playback + `→idle`, the silence timeout ends the utterance,
-      barge-in stops playback, and no wake events are processed while `speaking`.
+- [x] Wire wake → turn in `main.ts`: replace the push-to-talk (SIGUSR1/SIGUSR2)
+      trigger with the wake trigger, connect the gateway, open ElevenLabs STT/TTS + the wait loop, and run one talk-node turn per wake; clean shutdown of all.
+      Done when: the app build/typecheck lane passes and a boot unit test wires
+      wake → one turn against stubs.
 
-- [ ] Wire wake → session in `main.ts`: replace the push-to-talk (SIGUSR1/SIGUSR2)
-      trigger with the wake trigger from `wake-listen`/`openwakeword`, and mark
-      wake-originated Talk sessions with `source:"wake"` in existing session
-      metadata (no gateway-protocol version bump).
-      Done when: the app build/typecheck lane passes and a unit assertion confirms
-      the Talk session opened from a wake carries `source:"wake"` metadata.
+### Tests + gate
 
-- [ ] Extend the `server-talk-nodes` capability test so a node advertising
-      `"talk"` (as this node does) is detected as talk-capable.
-      Done when: `pnpm test src/gateway/server-talk-nodes.test.ts` passes including
-      the new assertion.
-
-- [ ] Add `apps/voice-room-node/src/session/talk-node.integration.test.ts` (multi
-      stub) spanning wake → stub STT transcript → stubbed reply → TTS bytes →
-      playback stub, asserting turn ordering and that no audio streams pre-wake.
+- [x] Add `apps/voice-room-node/src/session/talk-node.integration.test.ts` (multi
+      stub) spanning wake → stub STT transcript → stub gateway (`chat.send`/
+      `agent.wait`) verbose reply → stub TTS bytes → playback stub. Assert: the
+      prepend is present in `chat.send`, the wait loop played then stopped before
+      the reply, and no audio/PCM before wake.
       Done when: the integration test passes end to end against stubs.
 
-- [ ] Verify the ElevenLabs live path at the API level (no hardware): `scribe_v2`
-      transcribes the wake-fixture utterance and TTS returns playable audio,
-      reusing existing live helpers.
-      Done when: `OPENCLAW_LIVE_TEST=1 pnpm test
-    extensions/elevenlabs/elevenlabs-voiceroom.live.test.ts` passes (skips
-      cleanly without the flag/key), asserting a non-empty transcript marker and
-      non-empty audio bytes.
+- [x] Verify the ElevenLabs live path at the API level (no hardware): STT
+      transcribes a fixture utterance and TTS returns playable audio, reusing
+      existing live helpers.
+      Done when: `OPENCLAW_LIVE_TEST=1` runs the app's ElevenLabs live test (skips
+      cleanly without the flag/key), asserting a non-empty transcript and non-empty
+      audio bytes.
 
-- [ ] **Layer 2 confirmation gate (live, on the speaker).** Run the node against a
-      real gateway/OpenClaw. Say "Hey Jarvis", then a question ("what's the
-      date"). Confirm OpenClaw received the transcribed message and that a spoken
-      reply plays from the Anker. Record the end-to-end latency and the (possibly
-      verbose) reply text in `voice-room.e2e.md`.
-      Done when: `voice-room.e2e.md` records a live round trip where the spoken
-      question reached OpenClaw and its reply was spoken back through the speaker.
-      **Do not start Layer 3 until this passes.**
+- [ ] **Layer 2 confirmation gate (live, on the speaker).** Run the node on the
+      amd/PowerConf box against a real gateway/OpenClaw with `ELEVENLABS_API_KEY`
+      set. Say "Hey Jarvis", then a question ("what's the date"). Confirm: the wait
+      loop plays while OpenClaw thinks, then a **succinct 1–2 sentence** reply is
+      spoken from the PowerConf. Record end-to-end latency, wait-loop start/stop,
+      and the reply text in `voice-room.e2e.md`.
+      Done when: `voice-room.e2e.md` records a live turn — wake → question →
+      wait-music during processing → succinct spoken reply through the speaker.
 
 ---
 
-## Layer 3 — Speaker-origin brevity (succinct spoken replies)
+## Layer 3 — (folded into Layer 2)
 
-Goal: because the question originated from the speaker (`source:"wake"`), OpenClaw
-constrains the reply to a short spoken form. The same question that produced a
-long answer in Layer 2 should now produce a succinct one.
+Brevity is now applied in Layer 2 by prepending a 1–2 sentence instruction to the
+transcript before `chat.send`, so there is no separate Layer 3 build. The Layer 2
+gate already confirms the spoken reply is succinct.
 
-- [ ] In `src/talk/agent-run-control.ts` (and `agent-run-control-shared.ts` as
-      needed), attach a spoken-brief directive ("≤2 sentences, plain speech, no
-      markdown/URLs/code") to sessions flagged `source:"wake"`, gated so
-      text/non-wake sessions are unaffected.
-      Done when: `pnpm test src/talk/agent-run-control.test.ts` passes new cases —
-      a wake-flagged session injects the brevity directive; a text/non-wake
-      session does not (no cross-surface leak).
-
-- [ ] In `src/infra/voicewake-routing.ts`, register the `hey jarvis` trigger
-      routed to the configured target agent/session, reusing the existing routing
-      store (no new persisted store).
-      Done when: `pnpm test src/infra/voicewake-routing.test.ts` passes new cases —
-      `hey jarvis` resolves to the configured agent; an unknown phrase falls back
-      to the default target.
-
-- [ ] Extend `talk-node.integration.test.ts` to route the reply through the real
-      brevity persona + voicewake routing (replacing the stubbed reply) and assert
-      the reply is constrained to ≤2 sentences / plain speech.
-      Done when: the integration test's reply path invokes the real brevity
-      persona and routing, asserts the ≤2-sentence / plain-speech constraint, and
-      stays green; `pnpm test src/talk src/infra/voicewake-routing.test.ts` is
-      green.
-
-- [ ] **Layer 3 confirmation gate (live, on the speaker).** Ask the _same_
-      question used in the Layer 2 gate ("Hey Jarvis, what's the date"). Confirm
-      the spoken reply is now ≤2 sentences and plain speech, and record it beside
-      the Layer 2 verbose reply in `voice-room.e2e.md` to show the `source:"wake"`
-      flag changed the behavior.
-      Done when: `voice-room.e2e.md` shows the same question yielding a succinct
-      spoken reply under Layer 3 versus the longer Layer 2 reply, with both runs
-      recorded.
+Optional future hardening (only if the client-side prepend proves insufficient):
+move the brevity ask to a server-side session persona in
+`src/talk/agent-run-control.ts`, flagged by a wake/`source` marker, so the user's
+transcript is sent clean. Not scheduled; open a fresh step if wanted.
 
 ---
 
@@ -253,7 +289,7 @@ speaker confirmation between steps.
       that runs the node, and document enabling it (including
       `loginctl enable-linger`) in the app AGENTS.md/README.
       Done when: `systemd-analyze verify
-    apps/voice-room-node/openclaw-voice-room.service` reports no errors (or
+  apps/voice-room-node/openclaw-voice-room.service` reports no errors (or
       `systemctl --user cat` loads it cleanly on the box).
 
 - [ ] Add an `openclaw doctor` finding that reports when the voice-room

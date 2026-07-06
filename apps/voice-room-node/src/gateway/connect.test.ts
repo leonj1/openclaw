@@ -1,8 +1,18 @@
+import fs from "node:fs";
 import { createServer } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { connectToGateway, type GatewayTalkHandle } from "./connect.js";
 import { parseNodeConfig, type NodeConfig } from "../config.js";
+
+// Redirect the persisted device identity into a temp dir so the connect handshake
+// (which loads/creates one) never touches the real ~/.openclaw home.
+function tempIdentityEnv(): NodeJS.ProcessEnv {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-room-connect-"));
+  return { OPENCLAW_VOICE_ROOM_DEVICE_IDENTITY: path.join(dir, "device-identity.json") };
+}
 
 // Records what the stub gateway saw during the connect handshake so the test
 // can assert the node advertised cap "talk".
@@ -10,6 +20,7 @@ type StubConnect = {
   caps: unknown;
   mode: unknown;
   role: unknown;
+  scopes: unknown;
 };
 
 function rawDataToString(data: unknown): string {
@@ -70,7 +81,7 @@ function startStubGateway(
       const frame = JSON.parse(rawDataToString(data)) as {
         id?: string;
         method?: string;
-        params?: { caps?: unknown; client?: { mode?: unknown }; role?: unknown };
+        params?: { caps?: unknown; client?: { mode?: unknown }; role?: unknown; scopes?: unknown };
       };
       if (frame.method !== "connect") {
         return;
@@ -79,6 +90,7 @@ function startStubGateway(
         caps: frame.params?.caps,
         mode: frame.params?.client?.mode,
         role: frame.params?.role,
+        scopes: frame.params?.scopes,
       });
       socket.send(JSON.stringify({ type: "res", id: frame.id ?? "connect", ok: true, payload: helloOkPayload() }));
     });
@@ -109,7 +121,7 @@ afterEach(async () => {
   }
 });
 
-test("connects and registers a node advertising cap 'talk'", async () => {
+test("connects as an operator authorized for the chat.* turn RPCs", async () => {
   const port = await getFreePort();
   wss = new WebSocketServer({ port, host: "127.0.0.1" });
 
@@ -120,7 +132,7 @@ test("connects and registers a node advertising cap 'talk'", async () => {
 
   handle = await connectToGateway({
     config: nodeConfig(`ws://127.0.0.1:${port}`),
-    env: {},
+    env: tempIdentityEnv(),
     connectTimeoutMs: 5_000,
   });
 
@@ -128,7 +140,9 @@ test("connects and registers a node advertising cap 'talk'", async () => {
   expect(handle.client).toBeDefined();
   expect(seen).not.toBeNull();
   const connect = seen as unknown as StubConnect;
-  expect(connect.caps).toEqual(["talk"]);
-  expect(connect.mode).toBe("node");
-  expect(connect.role).toBe("node");
+  // Layer 2 drives operator RPCs (chat.send/agent.wait/chat.history), so the node
+  // connects as an operator with the scopes those methods require — not role:node.
+  expect(connect.mode).toBe("cli");
+  expect(connect.role).toBe("operator");
+  expect(connect.scopes).toEqual(["operator.read", "operator.write"]);
 });

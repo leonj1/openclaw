@@ -39,6 +39,29 @@ subtree ("Hey Jarvis" voice-room device node).
   (`-f S16_LE -r 24000 -c1`). Keep capture, playback, wake fixtures, and TTS all
   on this format.
 
+## Wait sound (Layer 2)
+
+- The "thinking" wait loop is a royalty-free **substitute** for the copyrighted
+  Jeopardy "Think!" theme — never ship the actual theme.
+- Source: **"Local Forecast - Elevator" by Kevin MacLeod** (incompetech.com), the
+  classic elevator/hold loop, mirrored on Wikimedia Commons:
+  `https://commons.wikimedia.org/wiki/File:Local_Forecast_-_Elevator_(ISRC_USUAN1300012).mp3`
+  Licensed **CC BY 3.0** (`https://creativecommons.org/licenses/by/3.0`) —
+  attribute Kevin MacLeod when redistributing.
+- Fetch + convert with `scripts/fetch-wait-sound.sh` into `assets/wait-loop.wav`
+  (24kHz mono PCM16; git-ignored, not committed). Swap `SOURCE_URL` in the script
+  for another CC0/CC-BY loop if desired.
+
+## On-device STT/TTS (Layer 2)
+
+- Layer 2 transcribes and speaks on-device via the ElevenLabs REST API
+  (`/v1/speech-to-text` scribe, `/v1/text-to-speech/{voice}` with
+  `output_format=pcm_24000`). The gateway's relays are not a clean text seam.
+- The API key comes **only** from `ELEVENLABS_API_KEY` (env-only, never config,
+  never committed). Voice/model ids live in the `elevenlabs` config section (with
+  defaults) and are env-overridable (`ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID`,
+  `ELEVENLABS_STT_MODEL`, `ELEVENLABS_BASE_URL`).
+
 ## Conventions
 
 - TS ESM, strict; schema-validate external boundaries with `zod`.

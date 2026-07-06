@@ -78,8 +78,83 @@ metric is wanted before shipping; not required to proceed to Layer 2.
 
 ## Layer 2 — Message to OpenClaw (live)
 
-_Filled in when Layer 2 is built._
+**Goal:** after a wake, a spoken question is transcribed, sent to OpenClaw, a
+royalty-free "thinking" loop plays while the agent thinks, and a **succinct 1–2
+sentence** reply is spoken back through the PowerConf.
 
-## Layer 3 — Speaker-origin brevity (live)
+### Preconditions
 
-_Filled in when Layer 3 is built._
+- Layer 1 gate passed (wake detection works on the PowerConf).
+- On the x86_64 Linux box with the Anker PowerConf attached; `alsa-utils`
+  present (`scripts/check-env.sh` exits 0); models fetched
+  (`scripts/fetch-models.sh`).
+- **Wait sound fetched:** `bash apps/voice-room-node/scripts/fetch-wait-sound.sh`
+  populated `apps/voice-room-node/assets/wait-loop.wav` (24kHz mono PCM16). It is
+  "Local Forecast - Elevator" by Kevin MacLeod, CC BY 3.0 (a Jeopardy-theme
+  substitute — never the copyrighted theme).
+- **ElevenLabs key:** `export ELEVENLABS_API_KEY=…` (env-only; never commit).
+  Optionally override voice/model via `ELEVENLABS_VOICE_ID`,
+  `ELEVENLABS_MODEL_ID`, `ELEVENLABS_STT_MODEL`.
+- **Gateway reachable:** a running OpenClaw gateway + agent. Config file (or env)
+  supplies `gateway.url` and the token env named by `gateway.tokenEnv`
+  (default `OPENCLAW_VOICE_ROOM_TOKEN`). Set that token in the environment.
+  Session key defaults to `voice-room` (override with
+  `OPENCLAW_VOICE_ROOM_SESSION_KEY`).
+
+### Procedure
+
+1. From the repo root, with the env above exported, boot the node:
+
+   ```bash
+   OPENCLAW_VOICE_ROOM_GATEWAY_URL=ws://<gateway-host>:18789 \
+   OPENCLAW_VOICE_ROOM_TOKEN=<token> \
+   ELEVENLABS_API_KEY=<key> \
+   node --experimental-strip-types apps/voice-room-node/src/main.ts
+   ```
+
+   It prints `voice-room-node: connected. Listening for "Hey Jarvis".` (use the
+   same `tsx`/`--experimental-strip-types` runner Layer 1 uses on the box).
+
+2. From ~2 m, say **"Hey Jarvis"**, pause for the wake, then ask a short question
+   such as **"what's the date"**. Stop speaking and wait.
+
+3. Confirm, in order: a `WAKE score=…` line prints; the **wait loop plays** from
+   the moment you finish the question; the wait loop **stops** the instant the
+   reply is ready; then a **succinct 1–2 sentence** reply is **spoken** from the
+   PowerConf. The mic is gated while thinking/speaking (the wait music / reply
+   must not re-trigger a wake).
+
+4. Note end-to-end latency (finish question → first spoken reply word), whether
+   the wait loop start/stop bracketed the think, the exact reply text, and
+   whether the reply was succinct. Repeat 2–3 times.
+
+5. Stop with `Ctrl-C` / SIGTERM; confirm a clean exit (`pgrep -a arecord aplay`
+   returns nothing).
+
+### Results
+
+| Metric                                   | Result |
+| ---------------------------------------- | ------ |
+| Date / operator                          |        |
+| Gateway URL / agent                      |        |
+| ElevenLabs voice / STT model             |        |
+| Question asked                           |        |
+| Wake printed?                            |        |
+| Wait loop played during think?           |        |
+| Wait loop stopped before reply spoken?   |        |
+| Reply text (spoken)                      |        |
+| Succinct (1–2 sentences)? (y/n)          |        |
+| End-to-end latency (s)                   |        |
+| Mic gated during think/speak (no self-wake)? |    |
+| Clean shutdown (no orphans)?             |        |
+
+- [ ] **Layer 2 confirmation gate:** wake → question → wait-music during
+      processing → succinct spoken reply through the speaker. (Requires the
+      physical PowerConf + a live gateway/OpenClaw + `ELEVENLABS_API_KEY`; run on
+      the box.)
+
+## Layer 3 — (folded into Layer 2)
+
+Brevity is applied in Layer 2 by prepending a 1–2 sentence instruction before
+`chat.send`; there is no separate Layer 3 gate. The Layer 2 gate above already
+confirms the spoken reply is succinct.

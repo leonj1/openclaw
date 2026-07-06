@@ -17,6 +17,12 @@ import { GatewayClient } from "@openclaw/gateway-client";
 import { GATEWAY_CLIENT_MODES } from "@openclaw/gateway-protocol/client-info";
 import type { EventFrame } from "@openclaw/gateway-protocol";
 import type { NodeConfig } from "../config.js";
+import {
+  loadOrCreateDeviceIdentity,
+  publicKeyRawBase64UrlFromPem,
+  resolveDeviceIdentityPath,
+  signDevicePayload,
+} from "./device-identity.js";
 
 // Capability advertised on connect. Must equal the gateway's talk-node
 // detection string so this node is routed talk (server-talk-nodes.ts).
@@ -119,13 +125,27 @@ export async function connectToGateway(
     };
   });
 
+  // Persisted signed device identity for the handshake; localhost silently pairs
+  // a new one on first connect and it is reused across restarts.
+  const deviceIdentity = loadOrCreateDeviceIdentity(resolveDeviceIdentityPath(env));
+
   const client = new GatewayClient({
     url: params.config.gateway.url,
     token: token || undefined,
-    mode: GATEWAY_CLIENT_MODES.NODE,
-    role: "node",
-    caps: [TALK_CAPABILITY],
+    // Layer 2 drives OpenClaw through operator RPCs (chat.send/agent.wait/
+    // chat.history), which reject role:"node" with "unauthorized role: node".
+    // Connect as an operator: the shared gateway token authorizes it and lets a
+    // local operator bypass device pairing (src/gateway/server/ws-connection/
+    // connect-policy.ts). chat.send/agent.wait need `operator.write`,
+    // chat.history needs `operator.read`.
+    mode: GATEWAY_CLIENT_MODES.CLI,
+    role: "operator",
+    scopes: ["operator.read", "operator.write"],
     env,
+    deviceIdentity,
+    // Signing callbacks the handshake uses; encoding matches core exactly so the
+    // gateway verifies our signature (see device-identity.ts).
+    hostDeps: { signDevicePayload, publicKeyRawBase64UrlFromPem },
     onEvent: (evt) => {
       const frame = readTtsAudioFrame(evt);
       if (frame === null) {

@@ -89,6 +89,21 @@ export function parseWav(buffer: Buffer): WavParseResult {
   return { ok: true, wav: { ...format, pcm } };
 }
 
+// Splits a raw PCM buffer into fixed byte-size frames, each base64-encoded (the
+// wire form playback.enqueue expects). A trailing partial frame (< frameBytes)
+// is dropped so every frame is a whole set of samples. Shared by the wait-loop
+// and TTS paths, which both stream PCM into playback frame by frame.
+export function framePcmToBase64(pcm: Buffer, frameBytes: number): string[] {
+  if (frameBytes <= 0) {
+    throw new Error(`framePcmToBase64: frameBytes must be positive, got ${frameBytes}`);
+  }
+  const frames: string[] = [];
+  for (let offset = 0; offset + frameBytes <= pcm.length; offset += frameBytes) {
+    frames.push(pcm.subarray(offset, offset + frameBytes).toString("base64"));
+  }
+  return frames;
+}
+
 export function readWavFile(path: string): WavParseResult {
   return parseWav(fs.readFileSync(path));
 }

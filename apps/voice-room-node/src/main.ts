@@ -1,105 +1,196 @@
-// Boot path for the "Hey Jarvis" voice-room device node.
+// Boot path for the "Hey Jarvis" voice-room device node (Layer 2).
 //
-// Loads the node config, opens mic capture and TTS playback, and connects to
-// the gateway advertising cap "talk". A single SIGTERM handler tears all three
-// down together — the capture/playback children's own signal handlers are
-// disabled here so shutdown is coordinated from one place instead of three
-// racing handlers.
-//
-// Manual push-to-talk: this node has no keyboard, so one utterance is bracketed
-// by two signals (SIGUSR1 = press/start, SIGUSR2 = release/end) or, in tests, by
-// the `startUtterance`/`endUtterance` methods. On the first press a talk session
-// is opened on the gateway and captured PCM frames start streaming up; TTS reply
-// frames flow back into playback. This is a precursor to the Phase-2 wake-word
-// state machine (src/session/talk-node.ts), which will own the real
-// wake -> session lifecycle and supersede this manual trigger.
-import { pathToFileURL } from "node:url";
+// Loads config, opens mic capture + TTS playback, connects to the gateway, and
+// runs the wake -> turn loop: a single mic consumer routes frames to wake
+// detection while idle, to utterance endpointing after a wake, and drops them
+// while the node is thinking/speaking (so the wait music and spoken reply can
+// never re-trigger "hey jarvis"). Each wake runs one talk-node turn
+// (STT -> brevity -> chat.send/agent.wait -> TTS). One SIGTERM handler tears
+// capture, playback, and the gateway down together.
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { requestAgentReply } from "./agent/request.js";
+import { endpointUtterance } from "./audio/endpoint.js";
+import { startCapture, type AudioCaptureOptions } from "./audio/capture.js";
+import { startPlayback, type AudioPlaybackOptions } from "./audio/playback.js";
+import { createWaitLoop } from "./audio/wait-loop.js";
+import { connectToGateway, type ConnectToGatewayParams } from "./gateway/connect.js";
+import { loadNodeConfig, type NodeConfig } from "./config.js";
+import { synthesizeReply } from "./tts/synthesize.js";
+import { transcribeUtterance } from "./stt/transcribe.js";
+import { createOpenWakeWord, type WakeEvent } from "./wake/openwakeword.js";
 import {
-  startCapture,
-  type AudioCaptureOptions,
-} from "./audio/capture.js";
-import {
-  startPlayback,
-  type AudioPlaybackOptions,
-} from "./audio/playback.js";
-import {
-  connectToGateway,
-  type ConnectToGatewayParams,
-} from "./gateway/connect.js";
-import { loadNodeConfig } from "./config.js";
+  TalkNode,
+  type SttResult,
+  type TalkNodeDeps,
+  type WaitLoopHandle,
+} from "./session/talk-node.js";
 
-// Lifecycle surfaces the boot path drives. Narrow structural shapes so the boot
-// test can inject fakes and keep off real `arecord`/`aplay`; the real subsystems
-// satisfy them.
+// Structural handles so the boot test can inject fakes and stay off real
+// arecord/aplay/onnx; the real subsystems satisfy them.
 interface CaptureHandle {
-  // Fixed-size PCM16 frames from the mic, consumed by the push-to-talk pump.
   frames(): AsyncIterableIterator<Buffer>;
   stop(): Promise<void>;
 }
 interface PlaybackHandle {
-  // Queue one base64 TTS frame for playback (decode happens inside).
   enqueue(frameBase64: string): void;
+  pendingFrames(): number;
+  drained(): Promise<void>;
   stop(): Promise<void>;
 }
 interface GatewayHandle {
-  setTalkSession(sessionId: string | null): void;
-  sendPcm(frame: Buffer): void;
-  onTtsFrame(listener: (audioBase64: string) => void): () => void;
   close(): Promise<void>;
-  // Used to open/close the talk session the appended audio targets.
   client: { request<T = unknown>(method: string, params?: unknown): Promise<T> };
 }
+interface Detector {
+  process(pcm24k: Buffer): Promise<WakeEvent | null>;
+}
 
-// Talk-session RPCs. The node streams audio into a `realtime` gateway-relay
-// session (the only transport whose `appendAudio` the gateway accepts and which
-// emits `talk.event` audio back — see src/gateway/server-methods/talk-session.ts
-// and the connect.ts wire contract). Phase-2 talk-node.ts will own this.
-const TALK_SESSION_CREATE_METHOD = "talk.session.create";
-const TALK_SESSION_CLOSE_METHOD = "talk.session.close";
-const TALK_SESSION_CREATE_PARAMS = {
-  mode: "realtime",
-  transport: "gateway-relay",
-  brain: "agent-consult",
-} as const;
+// Default wait-loop asset (downloaded by scripts/fetch-wait-sound.sh; git-ignored).
+const WAIT_LOOP_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "assets",
+  "wait-loop.wav",
+);
 
-// Injection seams for the boot test. Defaults are the real subsystems; a test
-// swaps capture/playback for fakes and points `connectToGateway` at a stub.
+// Session key for the voice-room conversation. Env-overridable (no config-schema
+// growth): one room => one conversation by default.
+function resolveSessionKey(env: NodeJS.ProcessEnv): string {
+  return env.OPENCLAW_VOICE_ROOM_SESSION_KEY?.trim() || "voice-room";
+}
+
+// Push-based frame channel: the pump pushes utterance frames after a wake and
+// the endpointer consumes them as an async iterable. Closing ends the iterable.
+class FrameChannel implements AsyncIterableIterator<Buffer> {
+  private readonly queue: Buffer[] = [];
+  private waiter?: (result: IteratorResult<Buffer>) => void;
+  private closed = false;
+
+  push(frame: Buffer): void {
+    if (this.closed) {
+      return;
+    }
+    if (this.waiter) {
+      const waiter = this.waiter;
+      this.waiter = undefined;
+      waiter({ value: frame, done: false });
+      return;
+    }
+    this.queue.push(frame);
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.waiter) {
+      const waiter = this.waiter;
+      this.waiter = undefined;
+      waiter({ value: undefined, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<Buffer> {
+    return this;
+  }
+
+  next(): Promise<IteratorResult<Buffer>> {
+    const frame = this.queue.shift();
+    if (frame) {
+      return Promise.resolve({ value: frame, done: false });
+    }
+    if (this.closed) {
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    return new Promise((resolve) => {
+      this.waiter = resolve;
+    });
+  }
+}
+
+// Injection seams for the boot test. Defaults are the real subsystems.
 export interface BootDeps {
   env?: NodeJS.ProcessEnv;
   startCapture?: (options: AudioCaptureOptions) => CaptureHandle;
   startPlayback?: (options: AudioPlaybackOptions) => PlaybackHandle;
   connectToGateway?: (params: ConnectToGatewayParams) => Promise<GatewayHandle>;
+  createDetector?: (params: { threshold: number }) => Promise<Detector>;
+  // Wait-music loop factory; defaults to loading the asset WAV and binding it to
+  // playback. Tests inject a stub to skip file IO.
+  makeWaitLoop?: (sink: PlaybackHandle) => WaitLoopHandle;
+  // ElevenLabs boundaries; tests stub these so no network is touched.
+  transcribe?: (pcm: Buffer, config: NodeConfig, env: NodeJS.ProcessEnv) => Promise<SttResult>;
+  synthesize?: TalkNodeDeps["synthesize"];
+  // Observes each completed turn (result), for the boot test.
+  onTurn?: (result: Awaited<ReturnType<TalkNode["runTurn"]>>) => void;
+  log?: (line: string) => void;
 }
 
 export interface VoiceRoomNode {
-  // Push-to-talk press: open the talk session on first use and begin streaming
-  // captured PCM as one utterance. Idempotent while already streaming.
-  startUtterance(): Promise<void>;
-  // Push-to-talk release: stop streaming captured PCM. The session stays open so
-  // the next press reuses it; TTS replies keep flowing into playback.
-  endUtterance(): void;
-  // Stop capture and playback and close the gateway connection. Idempotent.
+  // Resolves when the mic pump ends (capture EOF or after shutdown).
+  done: Promise<void>;
+  // Current turn state, for tests/observability.
+  state(): TalkNode["state"];
+  // Stop capture + playback and close the gateway. Idempotent.
   shutdown(): Promise<void>;
 }
 
+function defaultTranscribe(pcm: Buffer, config: NodeConfig, env: NodeJS.ProcessEnv): Promise<SttResult> {
+  return transcribeUtterance({
+    pcm,
+    baseUrl: config.elevenlabs.baseUrl,
+    model: config.elevenlabs.sttModel,
+    env,
+  });
+}
+
 /**
- * Boots the node: load config, open capture/playback, connect to the gateway
- * advertising cap "talk", wire TTS replies into playback, and start the
- * push-to-talk pump. Throws on invalid config or a failed gateway connect (the
- * audio children are reaped first so a failed boot leaves no orphan
- * `arecord`/`aplay`).
+ * Boots the node: load config, open capture/playback, connect to the gateway,
+ * build the wake detector + talk-node, and run the wake -> turn loop. Throws on
+ * invalid config or a failed gateway connect (audio children are reaped first so
+ * a failed boot leaves no orphan arecord/aplay).
  */
 export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomNode> {
   const env = deps.env ?? process.env;
+  const log = deps.log ?? ((line: string) => console.log(line));
 
   const loaded = loadNodeConfig(env);
   if (!loaded.ok) {
     throw new Error(`voice-room-node: invalid config: ${loaded.error}`);
   }
   const config = loaded.config;
+  const sessionKey = resolveSessionKey(env);
 
-  // Own shutdown centrally: disable the children's built-in SIGTERM handlers so
-  // the single handler below stops capture, playback, and the gateway together.
+  // Resolved TTS boundary, used both for the preflight below and every turn.
+  const synthesize =
+    deps.synthesize ??
+    ((text: string) =>
+      synthesizeReply({
+        text,
+        baseUrl: config.elevenlabs.baseUrl,
+        voiceId: config.elevenlabs.ttsVoiceId,
+        modelId: config.elevenlabs.ttsModelId,
+        env,
+      }));
+
+  // Fail closed BEFORE the node can accept any wake: prove ElevenLabs TTS
+  // actually synthesizes with the configured key/voice/model. A bad key or a
+  // plan-blocked voice (cloned -> 401, library -> 402) aborts boot here instead
+  // of letting the node listen for "Hey Jarvis" and then fail the turn at TTS.
+  // No fallback — the throw propagates out of boot and nothing has been opened.
+  const ttsCheck = await synthesize("Voice check.");
+  if (!ttsCheck.ok) {
+    throw new Error(`voice-room-node: ElevenLabs TTS preflight failed: ${ttsCheck.error}`);
+  }
+  if (ttsCheck.frames.length === 0) {
+    throw new Error("voice-room-node: ElevenLabs TTS preflight returned no audio");
+  }
+
+  const detector = await (deps.createDetector ?? createOpenWakeWord)({
+    threshold: config.wake.threshold,
+  });
+
+  // Own shutdown centrally: disable the children's SIGTERM handlers so the one
+  // handler below stops capture, playback, and the gateway together.
   const capture = (deps.startCapture ?? startCapture)({
     device: config.audio.captureDevice,
     handleProcessSignals: false,
@@ -113,62 +204,78 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   try {
     gateway = await (deps.connectToGateway ?? connectToGateway)({ config, env });
   } catch (error) {
-    // Connect failed after the audio children were spawned: reap them so a
-    // failed boot never leaves an orphan `arecord`/`aplay` behind.
     await Promise.allSettled([capture.stop(), playback.stop()]);
     throw error;
   }
 
-  // TTS reply frames play as they arrive, whether or not we are still streaming.
-  const unsubscribeTts = gateway.onTtsFrame((audioBase64) => playback.enqueue(audioBase64));
+  const waitLoop = (deps.makeWaitLoop ?? ((sink) => createWaitLoop({ path: WAIT_LOOP_PATH, sink })))(
+    playback,
+  );
+  const transcribe = deps.transcribe ?? defaultTranscribe;
 
-  // Push-to-talk state. `streaming` gates the single capture consumer below:
-  // frames are dropped until a press, then forwarded to the bound talk session.
-  let streaming = false;
-  let talkSessionId: string | null = null;
-  let shuttingDown = false;
+  // Active utterance channel while capturing; null otherwise. Its presence is
+  // the routing signal: frames go here during capture, to the detector when
+  // idle, and are dropped while the node is thinking/speaking. Boxed in an
+  // object so the pump closure reads the current value (a closure-mutated `let`
+  // would be narrowed away by control-flow analysis).
+  const router: { active: FrameChannel | null } = { active: null };
 
-  const ensureTalkSession = async (): Promise<void> => {
-    if (talkSessionId !== null) {
-      return;
-    }
-    const created = await gateway.client.request<{ sessionId: string }>(
-      TALK_SESSION_CREATE_METHOD,
-      TALK_SESSION_CREATE_PARAMS,
-    );
-    talkSessionId = created.sessionId;
-    gateway.setTalkSession(talkSessionId);
+  const talkDeps: TalkNodeDeps = {
+    captureUtterance: async () => {
+      const channel = router.active;
+      if (!channel) {
+        throw new Error("captureUtterance called without an active channel");
+      }
+      const result = await endpointUtterance(channel, {
+        silenceMs: config.endpointing.silenceMs,
+        maxUtteranceMs: config.endpointing.maxUtteranceMs,
+      });
+      // Endpointed: stop feeding this channel so thinking/speaking drop frames.
+      router.active = null;
+      return result;
+    },
+    transcribe: (pcm) => transcribe(pcm, config, env),
+    requestReply: ({ message, onSubmitted }) =>
+      requestAgentReply({ client: gateway.client, sessionKey, message, onSubmitted }),
+    synthesize,
+    waitLoop,
+    playback,
+  };
+  const node = new TalkNode(talkDeps);
+
+  let currentTurn: Promise<void> = Promise.resolve();
+  const handleWake = (event: WakeEvent): void => {
+    log(`WAKE score=${event.score.toFixed(3)} ts=${event.ts}`);
+    router.active = new FrameChannel();
+    currentTurn = (async () => {
+      const result = await node.runTurn();
+      if (!result.ok) {
+        log(`voice-room-node: turn failed at ${result.stage}: ${result.error}`);
+      }
+      deps.onTurn?.(result);
+    })();
   };
 
-  // Single consumer of the mic. Runs for the node's lifetime; capture.stop()
-  // ends the iterator on shutdown. Forwards frames only while a press is held.
   const pump = (async (): Promise<void> => {
     try {
       for await (const frame of capture.frames()) {
-        if (streaming) {
-          gateway.sendPcm(frame);
+        if (router.active) {
+          router.active.push(frame);
+          continue;
+        }
+        if (node.isMicGated()) {
+          // Thinking/speaking: drop mic so the reply cannot self-trigger a wake.
+          continue;
+        }
+        const event = await detector.process(frame);
+        if (event) {
+          handleWake(event);
         }
       }
     } catch {
-      // Capture ended/errored (expected on shutdown). Nothing to forward.
+      // Capture ended/errored (expected on shutdown). Nothing more to detect.
     }
   })();
-
-  const startUtterance = async (): Promise<void> => {
-    if (shuttingDown || streaming) {
-      return;
-    }
-    await ensureTalkSession();
-    // Re-check: a concurrent shutdown may have landed while awaiting create.
-    if (shuttingDown) {
-      return;
-    }
-    streaming = true;
-  };
-
-  const endUtterance = (): void => {
-    streaming = false;
-  };
 
   let shutdownPromise: Promise<void> | undefined;
   const onSigterm = (): void => {
@@ -176,45 +283,32 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   };
   const shutdown = (): Promise<void> => {
     if (!shutdownPromise) {
-      shuttingDown = true;
-      streaming = false;
       process.removeListener("SIGTERM", onSigterm);
-      unsubscribeTts();
-      // Close the talk session before dropping the socket so the gateway can
-      // release it; best-effort — a failed close must not block teardown.
-      const closeSession =
-        talkSessionId === null
-          ? Promise.resolve()
-          : gateway.client
-              .request(TALK_SESSION_CLOSE_METHOD, { sessionId: talkSessionId })
-              .then(() => {})
-              .catch(() => {});
-      shutdownPromise = closeSession
-        .then(() =>
-          Promise.allSettled([capture.stop(), playback.stop(), gateway.close(), pump]),
-        )
-        .then(() => {});
+      shutdownPromise = (async () => {
+        await capture.stop();
+        router.active?.close();
+        await pump;
+        await currentTurn;
+        await waitLoop.stop();
+        await Promise.allSettled([playback.stop(), gateway.close()]);
+      })();
     }
     return shutdownPromise;
   };
-
   process.on("SIGTERM", onSigterm);
 
-  return { startUtterance, endUtterance, shutdown };
+  return {
+    done: pump,
+    state: () => node.state,
+    shutdown,
+  };
 }
 
-// Direct-run entry: boot and keep the process alive until SIGTERM. SIGUSR1 and
-// SIGUSR2 drive the manual push-to-talk (press / release). A boot failure (bad
-// config, gateway unreachable) exits non-zero after logging.
+// Direct-run entry: boot and listen until SIGTERM.
 async function main(): Promise<void> {
   try {
-    const node = await bootVoiceRoomNode();
-    console.log(
-      'voice-room-node: connected, advertising cap "talk". ' +
-        "Push-to-talk: SIGUSR1 = start, SIGUSR2 = end.",
-    );
-    process.on("SIGUSR1", () => void node.startUtterance());
-    process.on("SIGUSR2", () => node.endUtterance());
+    await bootVoiceRoomNode();
+    console.log('voice-room-node: connected. Listening for "Hey Jarvis". SIGTERM to stop.');
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`voice-room-node: boot failed: ${detail}`);
@@ -222,7 +316,6 @@ async function main(): Promise<void> {
   }
 }
 
-// Run only when executed as the process entry, not when imported by a test.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main();
 }

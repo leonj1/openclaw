@@ -32,6 +32,21 @@ const WakeConfigSchema = z
   .strict()
   .prefault({});
 
+// On-device STT/TTS runs against ElevenLabs (Layer 2). Only non-secret ids live
+// here; the API key is env-only (`ELEVENLABS_API_KEY`) and never in this config.
+// The default voice is a built-in premade voice (Adam) that works on the free
+// ElevenLabs tier — library and instant-cloned voices require a paid plan and
+// return 401/402, which the boot-time TTS preflight (main.ts) rejects.
+const ElevenLabsConfigSchema = z
+  .object({
+    baseUrl: z.string().url().default("https://api.elevenlabs.io"),
+    sttModel: z.string().min(1).default("scribe_v2"),
+    ttsVoiceId: z.string().min(1).default("pNInz6obpgDQGcFmaJgB"),
+    ttsModelId: z.string().min(1).default("eleven_multilingual_v2"),
+  })
+  .strict()
+  .prefault({});
+
 export const NodeConfigSchema = z
   .object({
     gateway: z
@@ -45,6 +60,7 @@ export const NodeConfigSchema = z
       .strict(),
     audio: AudioConfigSchema,
     wake: WakeConfigSchema,
+    elevenlabs: ElevenLabsConfigSchema,
     endpointing: z
       .object({
         // Trailing silence that ends an utterance while streaming.
@@ -125,12 +141,31 @@ function readEnvOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
     audio.playbackDevice = env.OPENCLAW_VOICE_ROOM_PLAYBACK_DEVICE;
   }
 
+  // ElevenLabs voice/model ids are operational (an operator may swap the voice
+  // without editing JSON); the API key stays env-only and is never read here.
+  const elevenlabs: Record<string, unknown> = {};
+  if (env.ELEVENLABS_BASE_URL) {
+    elevenlabs.baseUrl = env.ELEVENLABS_BASE_URL;
+  }
+  if (env.ELEVENLABS_STT_MODEL) {
+    elevenlabs.sttModel = env.ELEVENLABS_STT_MODEL;
+  }
+  if (env.ELEVENLABS_VOICE_ID) {
+    elevenlabs.ttsVoiceId = env.ELEVENLABS_VOICE_ID;
+  }
+  if (env.ELEVENLABS_MODEL_ID) {
+    elevenlabs.ttsModelId = env.ELEVENLABS_MODEL_ID;
+  }
+
   const overrides: Record<string, unknown> = {};
   if (Object.keys(gateway).length > 0) {
     overrides.gateway = gateway;
   }
   if (Object.keys(audio).length > 0) {
     overrides.audio = audio;
+  }
+  if (Object.keys(elevenlabs).length > 0) {
+    overrides.elevenlabs = elevenlabs;
   }
   return overrides;
 }
@@ -178,12 +213,19 @@ function readMergedConfig(env: NodeJS.ProcessEnv): MergedConfigResult {
     ...(fileData.audio as Record<string, unknown> | undefined),
     ...(overrides.audio as Record<string, unknown> | undefined),
   };
+  const elevenlabs = {
+    ...(fileData.elevenlabs as Record<string, unknown> | undefined),
+    ...(overrides.elevenlabs as Record<string, unknown> | undefined),
+  };
   const raw: Record<string, unknown> = { ...fileData };
   if (Object.keys(gateway).length > 0) {
     raw.gateway = gateway;
   }
   if (Object.keys(audio).length > 0) {
     raw.audio = audio;
+  }
+  if (Object.keys(elevenlabs).length > 0) {
+    raw.elevenlabs = elevenlabs;
   }
   return { ok: true, raw };
 }

@@ -1,38 +1,51 @@
 import { createServer } from "node:net";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { bootVoiceRoomNode, type VoiceRoomNode } from "./main.js";
+import { BREVITY_PREAMBLE } from "./agent/brevity.js";
 
 // Everything the stub gateway observed, so tests can assert the connect
-// handshake and the push-to-talk uplink.
+// handshake (cap "talk") and the Layer 2 turn RPCs (chat.send/agent.wait).
 type StubRecord = {
   connect: { caps: unknown; mode: unknown; role: unknown } | null;
-  createParams: unknown;
-  appendedAudio: string[];
-  closedSessionId: unknown;
+  chatSendMessage: string | null;
+  agentWaitRunId: unknown;
 };
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// A capture stub that streams non-empty PCM frames until stopped, so the
-// push-to-talk pump has audio to forward while an utterance is held.
+const FRAME_SAMPLES = (24_000 * 20) / 1000; // 20ms PCM16 frame
+function pcmFrame(amplitude: number): Buffer {
+  const buf = Buffer.alloc(FRAME_SAMPLES * 2);
+  for (let i = 0; i < FRAME_SAMPLES; i++) {
+    buf.writeInt16LE(i % 2 === 0 ? amplitude : -amplitude, i * 2);
+  }
+  return buf;
+}
+
+// The single frame the stub detector treats as "hey jarvis".
+const WAKE_FRAME = pcmFrame(1);
+
+// Capture stub: emits the wake frame, then a speech-then-silence utterance, then
+// idles on silence until stopped, so the endpointer can resolve and the pump
+// keeps running.
 function fakeCapture() {
   let stopped = false;
   let stops = 0;
-  const isStopped = (): boolean => stopped;
   async function* gen(): AsyncGenerator<Buffer> {
-    let i = 0;
-    while (!isStopped()) {
-      // Two non-zero bytes so `sendPcm` never treats the frame as empty.
-      yield Buffer.from([(i & 0xff) || 1, ((i >> 8) & 0xff) || 1]);
-      i += 1;
-      await delay(3);
+    yield WAKE_FRAME;
+    for (let i = 0; i < 10 && !stopped; i++) {
+      yield pcmFrame(8000); // 200ms of speech
+      await delay(1);
+    }
+    while (!stopped) {
+      yield pcmFrame(0); // trailing silence -> endpoint, then idle
+      await delay(2);
     }
   }
   return {
@@ -45,7 +58,7 @@ function fakeCapture() {
   };
 }
 
-// A playback stub that records the base64 TTS frames it was handed.
+// Playback stub: records enqueued TTS frames; satisfies the PlaybackHandle shape.
 function fakePlayback() {
   let stops = 0;
   const enqueued: string[] = [];
@@ -53,6 +66,8 @@ function fakePlayback() {
     enqueue: (frameBase64: string): void => {
       enqueued.push(frameBase64);
     },
+    pendingFrames: (): number => 0,
+    drained: async (): Promise<void> => {},
     stop: async (): Promise<void> => {
       stops += 1;
     },
@@ -61,13 +76,17 @@ function fakePlayback() {
   };
 }
 
+// Detector stub: fires one wake on the WAKE_FRAME, nothing otherwise.
+function fakeDetector() {
+  return {
+    process: async (frame: Buffer): Promise<{ score: number; ts: number } | null> =>
+      frame.equals(WAKE_FRAME) ? { score: 0.9, ts: 1 } : null,
+  };
+}
+
 function rawDataToString(data: unknown): string {
-  if (typeof data === "string") {
-    return data;
-  }
-  if (Buffer.isBuffer(data)) {
-    return data.toString("utf8");
-  }
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
   return String(data);
 }
 
@@ -87,47 +106,30 @@ async function getFreePort(): Promise<number> {
   });
 }
 
-// Minimal gateway hello so the client resolves the connect. Large tick interval
-// keeps the client's tick watchdog quiet for the duration of the test.
 function helloOkPayload() {
   return {
     type: "hello-ok",
     protocol: 2,
     server: { version: "dev", connId: "c1" },
     features: { methods: [], events: [] },
-    snapshot: {
-      presence: [],
-      health: {},
-      stateVersion: { presence: 1, health: 1 },
-      uptimeMs: 1,
-    },
+    snapshot: { presence: [], health: {}, stateVersion: { presence: 1, health: 1 }, uptimeMs: 1 },
     policy: { maxPayload: 512 * 1024, maxBufferedBytes: 1024 * 1024, tickIntervalMs: 30_000 },
   };
 }
 
-// Base64 PCM16 the stub returns as the TTS reply for the push-to-talk test.
-const TTS_REPLY_BASE64 = Buffer.from([9, 9, 9, 9]).toString("base64");
-
-// Stub gateway that drives the real handshake and the talk-session RPCs: replies
-// with hello-ok, hands out a session id on create, records appended audio (and
-// answers the first append with a TTS reply event), and records close.
+// Stub gateway: drives the real handshake, then answers the Layer 2 turn RPCs
+// per the verified contract (chat.send -> runId, agent.wait -> ok, chat.history
+// -> assistant text).
 function startStubGateway(wss: WebSocketServer, record: StubRecord): void {
   wss.on("connection", (socket: WebSocket) => {
     socket.send(
       JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "test-nonce" } }),
     );
-    let ttsSent = false;
     socket.on("message", (data) => {
       const frame = JSON.parse(rawDataToString(data)) as {
         id?: string;
         method?: string;
-        params?: {
-          caps?: unknown;
-          client?: { mode?: unknown };
-          role?: unknown;
-          sessionId?: unknown;
-          audioBase64?: unknown;
-        };
+        params?: Record<string, unknown> & { client?: { mode?: unknown } };
       };
       const id = frame.id ?? frame.method ?? "req";
       const respond = (payload: unknown): void => {
@@ -142,55 +144,44 @@ function startStubGateway(wss: WebSocketServer, record: StubRecord): void {
           };
           respond(helloOkPayload());
           return;
-        case "talk.session.create":
-          record.createParams = frame.params;
-          respond({ sessionId: "sess-1" });
+        case "chat.send":
+          record.chatSendMessage = String(frame.params?.message ?? "");
+          respond({ runId: frame.params?.idempotencyKey, status: "in_flight" });
           return;
-        case "talk.session.appendAudio":
-          if (typeof frame.params?.audioBase64 === "string") {
-            record.appendedAudio.push(frame.params.audioBase64);
-          }
-          respond({ ok: true });
-          if (!ttsSent) {
-            ttsSent = true;
-            socket.send(
-              JSON.stringify({
-                type: "event",
-                event: "talk.event",
-                payload: { type: "audio", audioBase64: TTS_REPLY_BASE64 },
-              }),
-            );
-          }
+        case "agent.wait":
+          record.agentWaitRunId = frame.params?.runId;
+          respond({ runId: frame.params?.runId, status: "ok" });
           return;
-        case "talk.session.close":
-          record.closedSessionId = frame.params?.sessionId;
-          respond({ ok: true });
+        case "chat.history":
+          respond({
+            messages: [
+              { role: "user", content: [{ type: "text", text: "what's the date" }] },
+              { role: "assistant", content: [{ type: "text", text: "It is Sunday." }] },
+            ],
+          });
           return;
         default:
-          if (frame.method) {
-            respond({ ok: true });
-          }
+          if (frame.method) respond({ ok: true });
       }
     });
   });
 }
 
 function newRecord(): StubRecord {
-  return { connect: null, createParams: null, appendedAudio: [], closedSessionId: null };
+  return { connect: null, chatSendMessage: null, agentWaitRunId: null };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error("waitFor timed out");
-    }
+    if (Date.now() > deadline) throw new Error("waitFor timed out");
     await delay(5);
   }
 }
 
 let wss: WebSocketServer | null = null;
 let node: VoiceRoomNode | null = null;
+const tmpFiles: string[] = [];
 
 afterEach(async () => {
   if (node) {
@@ -198,82 +189,93 @@ afterEach(async () => {
     node = null;
   }
   if (wss) {
-    await new Promise<void>((resolve) => {
-      wss?.close(() => resolve());
-    });
+    await new Promise<void>((resolve) => wss?.close(() => resolve()));
     wss = null;
   }
+  for (const f of tmpFiles.splice(0)) fs.rmSync(f, { force: true });
 });
 
-async function bootAgainstStub(record: StubRecord) {
+async function bootAgainstStub(record: StubRecord, ttsFrames: string[]) {
   const port = await getFreePort();
   wss = new WebSocketServer({ port, host: "127.0.0.1" });
   startStubGateway(wss, record);
 
+  // Temp config: small silence gate so the utterance endpoints quickly in-test.
+  const configPath = path.join(os.tmpdir(), `voice-room-node-${port}.json`);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { url: `ws://127.0.0.1:${port}` },
+      endpointing: { silenceMs: 60, maxUtteranceMs: 5_000 },
+    }),
+  );
+  tmpFiles.push(configPath);
+
   const capture = fakeCapture();
   const playback = fakePlayback();
-
-  // Missing config file + env override supplies the required gateway URL, so the
-  // boot exercises the real config loader without touching the home-dir config.
-  const env: NodeJS.ProcessEnv = {
-    OPENCLAW_VOICE_ROOM_CONFIG: path.join(os.tmpdir(), "voice-room-node-nonexistent-config.json"),
-    OPENCLAW_VOICE_ROOM_GATEWAY_URL: `ws://127.0.0.1:${port}`,
-  };
+  const env: NodeJS.ProcessEnv = { OPENCLAW_VOICE_ROOM_CONFIG: configPath };
 
   const booted = await bootVoiceRoomNode({
     env,
     startCapture: () => capture,
     startPlayback: () => playback,
+    createDetector: async () => fakeDetector(),
+    makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
+    transcribe: async () => ({ ok: true, text: "what's the date" }),
+    synthesize: async () => ({ ok: true, frames: ttsFrames }),
   });
   node = booted;
   return { booted, capture, playback };
 }
 
-test("boots, connects, and registers a node advertising cap 'talk'", async () => {
+test("connects as an operator (for the chat.* turn RPCs)", async () => {
   const record = newRecord();
-  const { booted, capture, playback } = await bootAgainstStub(record);
+  await bootAgainstStub(record, ["TTS"]);
 
-  // A resolved node == the gateway acknowledged the connection.
   expect(record.connect).not.toBeNull();
-  expect(record.connect?.caps).toEqual(["talk"]);
-  expect(record.connect?.mode).toBe("node");
-  expect(record.connect?.role).toBe("node");
-
-  // No audio is streamed before a push-to-talk press.
-  await delay(20);
-  expect(record.appendedAudio).toHaveLength(0);
-
-  // Shutdown stops both audio children exactly once.
-  await booted.shutdown();
-  node = null;
-  expect(capture.stopCount()).toBe(1);
-  expect(playback.stopCount()).toBe(1);
+  expect(record.connect?.role).toBe("operator");
 });
 
-test("push-to-talk streams captured PCM and plays the TTS reply", async () => {
+test("refuses to boot (never listens) when the ElevenLabs TTS preflight fails", async () => {
+  // No fallback: a plan-blocked / bad-key TTS must abort boot before the wake
+  // detector, capture, or gateway are ever opened.
+  const configPath = path.join(os.tmpdir(), `voice-room-node-ttsfail-${Date.now()}.json`);
+  fs.writeFileSync(configPath, JSON.stringify({ gateway: { url: "ws://127.0.0.1:1" } }));
+  tmpFiles.push(configPath);
+
+  const capture = fakeCapture();
+  await expect(
+    bootVoiceRoomNode({
+      env: { OPENCLAW_VOICE_ROOM_CONFIG: configPath },
+      startCapture: () => capture,
+      startPlayback: () => fakePlayback(),
+      createDetector: async () => fakeDetector(),
+      makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
+      transcribe: async () => ({ ok: true, text: "x" }),
+      synthesize: async () => ({ ok: false, error: "401 subscription_required" }),
+    }),
+  ).rejects.toThrow(/TTS preflight failed/);
+  // Fail-closed happened before any capture was opened.
+  expect(capture.stopCount()).toBe(0);
+});
+
+test("runs exactly one talk turn per wake: chat.send carries the brevity prepend and TTS plays", async () => {
   const record = newRecord();
-  const { booted, playback } = await bootAgainstStub(record);
+  const { booted, playback } = await bootAgainstStub(record, ["TTSFRAME1", "TTSFRAME2"]);
 
-  // Press: opens the talk session and starts streaming captured frames.
-  await booted.startUtterance();
-  await waitFor(() => record.appendedAudio.length >= 3);
+  // Wake -> turn -> the spoken reply reaches playback.
+  await waitFor(() => playback.enqueued().length >= 2);
 
-  // Streamed frames reached the gateway as base64 appendAudio.
-  expect(record.appendedAudio.length).toBeGreaterThanOrEqual(3);
-  expect(record.createParams).toMatchObject({ mode: "realtime" });
+  // The prepended brevity message reached chat.send with the transcript verbatim.
+  expect(record.chatSendMessage).not.toBeNull();
+  expect(record.chatSendMessage?.startsWith(BREVITY_PREAMBLE)).toBe(true);
+  expect(record.chatSendMessage?.endsWith("what's the date")).toBe(true);
+  // agent.wait was called for the run.
+  expect(typeof record.agentWaitRunId).toBe("string");
+  // TTS frames were enqueued to playback in order.
+  expect(playback.enqueued()).toEqual(["TTSFRAME1", "TTSFRAME2"]);
 
-  // The TTS reply the gateway pushed back was handed to playback.
-  await waitFor(() => playback.enqueued().includes(TTS_REPLY_BASE64));
-  expect(playback.enqueued()).toContain(TTS_REPLY_BASE64);
-
-  // Release: streaming stops; no new audio is appended afterward.
-  booted.endUtterance();
-  const afterRelease = record.appendedAudio.length;
-  await delay(30);
-  expect(record.appendedAudio.length).toBe(afterRelease);
-
-  await booted.shutdown();
-  node = null;
-  // The session opened for the utterance was closed on shutdown.
-  expect(record.closedSessionId).toBe("sess-1");
+  // Turn finished -> back to idle.
+  await waitFor(() => booted.state() === "idle");
+  expect(booted.state()).toBe("idle");
 });
