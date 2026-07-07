@@ -51,6 +51,12 @@ subtree ("Hey Jarvis" voice-room device node).
 - Fetch + convert with `scripts/fetch-wait-sound.sh` into `assets/wait-loop.wav`
   (24kHz mono PCM16; git-ignored, not committed). Swap `SOURCE_URL` in the script
   for another CC0/CC-BY loop if desired.
+- Alternative to the loop: short spoken fillers ("one moment…", "thinking…",
+  "working on it") synthesized by `scripts/fetch-voice-fillers.ts` into
+  `assets/filler-*.wav` (same format; git-ignored, optional). `src/audio/wait-player.ts`
+  randomizes per turn between the instrumental loop and playing the fillers in
+  sequence with a random 2-3s silent gap between them. Missing filler files just
+  fall back to the loop.
 
 ## On-device STT/TTS (Layer 2)
 

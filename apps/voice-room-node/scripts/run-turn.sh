@@ -98,6 +98,16 @@ else
   bash "$APP_DIR/scripts/fetch-wait-sound.sh"
 fi
 
+# Spoken wait-filler assets, randomized with the instrumental loop each turn.
+# Best-effort: a plan that cannot synthesize them just falls back to the loop.
+if [[ -f "$APP_DIR/assets/filler-one-moment.wav" ]]; then
+  echo "==> Wait-filler assets present."
+else
+  echo "==> Fetching wait-filler assets…"
+  OPENCLAW_LIVE_TEST=1 node "$APP_DIR/scripts/fetch-voice-fillers.ts" \
+    || echo "WARN: wait-filler synth failed; using the instrumental loop only." >&2
+fi
+
 # The TypeScript entry runs through the repo-root tsx runner.
 if [[ ! -x "$REPO_ROOT/node_modules/.bin/tsx" ]]; then
   echo "ERROR: repo-root tsx not found. Run 'pnpm install' in $REPO_ROOT first." >&2

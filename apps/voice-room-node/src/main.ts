@@ -13,7 +13,7 @@ import { requestAgentReply } from "./agent/request.js";
 import { endpointUtterance } from "./audio/endpoint.js";
 import { startCapture, type AudioCaptureOptions } from "./audio/capture.js";
 import { startPlayback, type AudioPlaybackOptions } from "./audio/playback.js";
-import { createWaitLoop } from "./audio/wait-loop.js";
+import { createWaitPlayer } from "./audio/wait-player.js";
 import { connectToGateway, type ConnectToGatewayParams } from "./gateway/connect.js";
 import { loadNodeConfig, type NodeConfig } from "./config.js";
 import { synthesizeReply } from "./tts/synthesize.js";
@@ -46,12 +46,13 @@ interface Detector {
   process(pcm24k: Buffer): Promise<WakeEvent | null>;
 }
 
-// Default wait-loop asset (downloaded by scripts/fetch-wait-sound.sh; git-ignored).
-const WAIT_LOOP_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "assets",
-  "wait-loop.wav",
+const ASSETS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "assets");
+// Instrumental wait loop (downloaded by scripts/fetch-wait-sound.sh; git-ignored).
+const WAIT_LOOP_PATH = path.join(ASSETS_DIR, "wait-loop.wav");
+// Spoken wait fillers (scripts/fetch-voice-fillers.ts; git-ignored, optional).
+// The wait player randomizes between these and the instrumental loop each turn.
+const FILLER_PATHS = ["filler-one-moment.wav", "filler-thinking.wav", "filler-working-on-it.wav"].map(
+  (name) => path.join(ASSETS_DIR, name),
 );
 
 // Session key for the voice-room conversation. Env-overridable (no config-schema
@@ -208,9 +209,11 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
     throw error;
   }
 
-  const waitLoop = (deps.makeWaitLoop ?? ((sink) => createWaitLoop({ path: WAIT_LOOP_PATH, sink })))(
-    playback,
-  );
+  const waitLoop = (
+    deps.makeWaitLoop ??
+    ((sink) =>
+      createWaitPlayer({ instrumentalPath: WAIT_LOOP_PATH, fillerPaths: FILLER_PATHS, sink }))
+  )(playback);
   const transcribe = deps.transcribe ?? defaultTranscribe;
 
   // Active utterance channel while capturing; null otherwise. Its presence is

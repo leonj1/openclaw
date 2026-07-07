@@ -278,3 +278,6 @@ extensions/diffs-language-pack/assets/viewer-runtime.js
 # voice-room-node: downloaded "thinking" wait loop (fetch-wait-sound.sh). Derived
 # from a CC-BY track, reproducible from the script — not committed.
 /apps/voice-room-node/assets/wait-loop.wav
+# voice-room-node: synthesized spoken wait fillers (fetch-voice-fillers.ts).
+# Generated via ElevenLabs, reproducible from the script — not committed.
+/apps/voice-room-node/assets/filler-*.wav
