@@ -79,6 +79,23 @@ describe("WaitLoop", () => {
     expect(sink.enqueued).toContain("CCCC");
   });
 
+  it("restarts after stop() so a reused instance plays every turn", async () => {
+    const sink = new StubSink(); // held stays 0 -> loop refills every poll
+    const loop = new WaitLoop({ frames: ["A", "B"], sink, highWaterFrames: 2, pollMs: 2 });
+
+    loop.start();
+    await delay(10);
+    await loop.stop();
+    const firstTurn = sink.enqueued.length;
+    expect(firstTurn).toBeGreaterThan(0);
+
+    // Second turn on the same instance: start() must resume enqueuing.
+    loop.start();
+    await delay(10);
+    await loop.stop();
+    expect(sink.enqueued.length).toBeGreaterThan(firstTurn);
+  });
+
   it("stops enqueuing promptly after stop()", async () => {
     const sink = new StubSink();
     const loop = new WaitLoop({ frames: ["X", "Y"], sink, highWaterFrames: 2, pollMs: 2 });

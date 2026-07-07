@@ -83,19 +83,25 @@ export class WaitLoop {
   }
 
   // Begin (or rejoin) the loop. Enqueues frames on repeat, throttled to the
-  // sink's queue depth, until stop(). Idempotent.
+  // sink's queue depth, until stop(). Idempotent while running. One instance is
+  // reused across turns, so start() must clear the prior stop() latch and restart
+  // the clip from the top; without this reset only the first turn would play.
   start(): void {
     if (this.running) {
       return;
     }
+    this.stopped = false;
+    this.index = 0;
     this.running = this.run();
   }
 
   // Halt enqueue. Does not flush the sink — the caller flushes via
   // playback.stop() so the queued tail stops the instant the reply lands.
+  // Clears `running` so the next turn's start() can spin the loop back up.
   async stop(): Promise<void> {
     this.stopped = true;
     await this.running;
+    this.running = undefined;
   }
 
   private async run(): Promise<void> {
