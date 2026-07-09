@@ -58,6 +58,27 @@ function fakeCapture() {
   };
 }
 
+// Capture stub that emits a little silence, then ENDS on its own — the
+// arecord-died case (a USB mic re-enumerating throws "No such device", so
+// arecord exits and its frame iterator completes). No wake fires.
+function fakeCaptureThatEnds() {
+  let stops = 0;
+  async function* gen(): AsyncGenerator<Buffer> {
+    for (let i = 0; i < 3; i++) {
+      yield pcmFrame(0);
+      await delay(1);
+    }
+    // arecord exited: stdout EOF -> the frames iterator ends here.
+  }
+  return {
+    frames: (): AsyncGenerator<Buffer> => gen(),
+    stop: async (): Promise<void> => {
+      stops += 1;
+    },
+    stopCount: (): number => stops,
+  };
+}
+
 // Playback stub: records enqueued TTS frames; satisfies the PlaybackHandle shape.
 function fakePlayback() {
   let stops = 0;
@@ -257,6 +278,34 @@ test("refuses to boot (never listens) when the ElevenLabs TTS preflight fails", 
   ).rejects.toThrow(/TTS preflight failed/);
   // Fail-closed happened before any capture was opened.
   expect(capture.stopCount()).toBe(0);
+});
+
+test("exits for restart when mic capture ends unexpectedly (arecord died)", async () => {
+  // A dropped mic (arecord dies mid-run) must be fatal, not silent: `done`
+  // rejects so the entry point exits non-zero and systemd (Restart=always)
+  // relaunches the node with a fresh arecord, instead of lingering deaf.
+  const record = newRecord();
+  const port = await getFreePort();
+  wss = new WebSocketServer({ port, host: "127.0.0.1" });
+  startStubGateway(wss, record);
+
+  const configPath = path.join(os.tmpdir(), `voice-room-node-capend-${port}.json`);
+  fs.writeFileSync(configPath, JSON.stringify({ gateway: { url: `ws://127.0.0.1:${port}` } }));
+  tmpFiles.push(configPath);
+
+  const capture = fakeCaptureThatEnds();
+  const booted = await bootVoiceRoomNode({
+    env: { OPENCLAW_VOICE_ROOM_CONFIG: configPath },
+    startCapture: () => capture,
+    startPlayback: () => fakePlayback(),
+    createDetector: async () => fakeDetector(),
+    makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
+    transcribe: async () => ({ ok: true, text: "x" }),
+    synthesize: async () => ({ ok: true, frames: ["TTS"] }),
+  });
+  node = booted;
+
+  await expect(booted.done).rejects.toThrow(/capture ended/i);
 });
 
 test("runs exactly one talk turn per wake: chat.send carries the brevity prepend and TTS plays", async () => {

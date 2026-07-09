@@ -127,7 +127,9 @@ export interface BootDeps {
 }
 
 export interface VoiceRoomNode {
-  // Resolves when the mic pump ends (capture EOF or after shutdown).
+  // Resolves when the node stops cleanly (via `shutdown`/SIGTERM). REJECTS if mic
+  // capture ends on its own (arecord died) so the entry point can exit non-zero
+  // and let systemd restart the node with a fresh recorder.
   done: Promise<void>;
   // Current turn state, for tests/observability.
   state(): TalkNode["state"];
@@ -276,9 +278,23 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
         }
       }
     } catch {
-      // Capture ended/errored (expected on shutdown). Nothing more to detect.
+      // Capture threw (e.g. arecord spawn/read error). Same as its EOF below: the
+      // pump ends and `done` decides fatal-vs-clean from `shutdownRequested`.
     }
   })();
+
+  let shutdownRequested = false;
+  // The mic loop only ends on EOF/error from capture. If that happens without a
+  // requested shutdown, arecord died (commonly a USB mic re-enumerating ->
+  // "No such device") and the node can no longer hear "Hey Jarvis". Make it
+  // fatal: `done` rejects so the entry point exits non-zero and systemd
+  // (Restart=always) relaunches with a fresh arecord, instead of the process
+  // lingering connected-but-deaf forever.
+  const done = pump.then(() => {
+    if (!shutdownRequested) {
+      throw new Error("voice-room-node: mic capture ended unexpectedly (arecord died)");
+    }
+  });
 
   let shutdownPromise: Promise<void> | undefined;
   const onSigterm = (): void => {
@@ -286,6 +302,8 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   };
   const shutdown = (): Promise<void> => {
     if (!shutdownPromise) {
+      // Set before stopping capture so the pump's end is seen as clean, not fatal.
+      shutdownRequested = true;
       process.removeListener("SIGTERM", onSigterm);
       shutdownPromise = (async () => {
         await capture.stop();
@@ -301,21 +319,35 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   process.on("SIGTERM", onSigterm);
 
   return {
-    done: pump,
+    done,
     state: () => node.state,
     shutdown,
   };
 }
 
-// Direct-run entry: boot and listen until SIGTERM.
+// Direct-run entry: boot and listen until SIGTERM (clean) or the mic dies (exit
+// non-zero so systemd's Restart=always relaunches us with a fresh arecord).
 async function main(): Promise<void> {
+  let node: VoiceRoomNode;
   try {
-    await bootVoiceRoomNode();
-    console.log('voice-room-node: connected. Listening for "Hey Jarvis". SIGTERM to stop.');
+    node = await bootVoiceRoomNode();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`voice-room-node: boot failed: ${detail}`);
     process.exitCode = 1;
+    return;
+  }
+  console.log('voice-room-node: connected. Listening for "Hey Jarvis". SIGTERM to stop.');
+  try {
+    await node.done;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`voice-room-node: ${detail}; exiting for restart`);
+    process.exitCode = 1;
+  } finally {
+    // Idempotent: on the mic-death path this closes the still-open gateway/
+    // playback so the process can actually exit (and be restarted).
+    await node.shutdown();
   }
 }
 
