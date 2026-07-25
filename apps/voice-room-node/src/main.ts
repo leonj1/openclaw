@@ -19,6 +19,7 @@ import { loadNodeConfig, type NodeConfig } from "./config.js";
 import { synthesizeReply } from "./tts/synthesize.js";
 import { transcribeUtterance } from "./stt/transcribe.js";
 import { HttpOllamaJudge } from "./llm/ollama-judge.js";
+import { WhisperLocalStt } from "./stt/local-transcribe.js";
 import {
   type WakeConfirmResult,
   LlmWakeWordConfirmation,
@@ -135,6 +136,9 @@ export interface BootDeps {
   // LlmWakeWordConfirmation when wakeVerification.enabled is true. Tests inject
   // a fake to control accept/reject/error outcomes.
   confirmWake?: (frames: AsyncIterableIterator<Buffer>) => Promise<WakeConfirmResult>;
+  // Local STT for wake-word verification (whisper subprocess). Tests inject a
+  // stub to avoid spawning a Python process.
+  localStt?: { transcribe(pcm: Buffer): Promise<SttResult>; close(): void };
   // Observes each completed turn (result), for the boot test.
   onTurn?: (result: Awaited<ReturnType<TalkNode["runTurn"]>>) => void;
   log?: (line: string) => void;
@@ -232,8 +236,20 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   )(playback);
   const transcribe = deps.transcribe ?? defaultTranscribe;
 
-  // Wake-word LLM verification. Default to a real HttpOllamaJudge when
-  // enabled; tests inject a fake via deps.confirmWake.
+  // Local whisper subprocess for wake-word verification STT.
+  // This avoids ElevenLabs costs on false positives.
+  const localStt: { transcribe(pcm: Buffer): Promise<SttResult>; close(): void } | null =
+    deps.localStt ??
+    (config.localStt.enabled
+      ? new WhisperLocalStt({
+          pythonPath: config.localStt.pythonPath,
+          scriptPath: path.resolve(ASSETS_DIR, "..", "scripts", "local-stt.py"),
+        })
+      : null);
+
+  // Wake-word LLM verification. Uses local whisper STT for the clip
+  // (free, offline) + ollama for the YES/NO judgment (free, local).
+  // Tests inject a fake via deps.confirmWake.
   const confirmWake: (frames: AsyncIterableIterator<Buffer>) => Promise<WakeConfirmResult> =
     deps.confirmWake ??
     (() => {
@@ -241,7 +257,8 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
         return async () => ({ accepted: true as const, clipPcm: Buffer.alloc(0) });
       }
       const impl = new LlmWakeWordConfirmation({
-        transcribe: (pcm: Buffer) => transcribe(pcm, config, env),
+        transcribe: (pcm: Buffer) =>
+          localStt?.transcribe(pcm) ?? Promise.resolve({ ok: false, error: "local STT disabled" }),
         judge: new HttpOllamaJudge({
           baseUrl: config.wakeVerification.baseUrl,
           model: config.wakeVerification.model,
@@ -358,6 +375,7 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
       process.removeListener("SIGTERM", onSigterm);
       shutdownPromise = (async () => {
         await capture.stop();
+        localStt?.close();
         router.rawChannel?.close();
         await pump;
         await currentTurn;

@@ -73,6 +73,17 @@ const WakeVerificationConfigSchema = z
   .strict()
   .prefault({});
 
+// Local STT for wake-word verification (faster-whisper subprocess).
+// Runs entirely offline so false-positive verifications never spend
+// ElevenLabs credits.
+const LocalSttConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    pythonPath: z.string().min(1).default("python3"),
+  })
+  .strict()
+  .prefault({});
+
 export const NodeConfigSchema = z
   .object({
     gateway: z
@@ -97,6 +108,7 @@ export const NodeConfigSchema = z
       .strict()
       .prefault({}),
     wakeVerification: WakeVerificationConfigSchema,
+    localStt: LocalSttConfigSchema,
   })
   .strict();
 
@@ -205,6 +217,17 @@ function readEnvOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
     else if (raw === "false") wakeVerification.enabled = false;
   }
 
+  // Local STT overrides for the verification whisper subprocess.
+  const localStt: Record<string, unknown> = {};
+  if (env.OPENCLAW_VOICE_ROOM_LOCAL_STT_PYTHON) {
+    localStt.pythonPath = env.OPENCLAW_VOICE_ROOM_LOCAL_STT_PYTHON;
+  }
+  if (env.OPENCLAW_VOICE_ROOM_LOCAL_STT_ENABLED) {
+    const raw = env.OPENCLAW_VOICE_ROOM_LOCAL_STT_ENABLED.toLowerCase();
+    if (raw === "true") localStt.enabled = true;
+    else if (raw === "false") localStt.enabled = false;
+  }
+
   const overrides: Record<string, unknown> = {};
   if (Object.keys(gateway).length > 0) {
     overrides.gateway = gateway;
@@ -217,6 +240,9 @@ function readEnvOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   }
   if (Object.keys(wakeVerification).length > 0) {
     overrides.wakeVerification = wakeVerification;
+  }
+  if (Object.keys(localStt).length > 0) {
+    overrides.localStt = localStt;
   }
   return overrides;
 }
@@ -272,6 +298,10 @@ function readMergedConfig(env: NodeJS.ProcessEnv): MergedConfigResult {
     ...(fileData.wakeVerification as Record<string, unknown> | undefined),
     ...(overrides.wakeVerification as Record<string, unknown> | undefined),
   };
+  const localStt = {
+    ...(fileData.localStt as Record<string, unknown> | undefined),
+    ...(overrides.localStt as Record<string, unknown> | undefined),
+  };
   const raw: Record<string, unknown> = { ...fileData };
   if (Object.keys(gateway).length > 0) {
     raw.gateway = gateway;
@@ -284,6 +314,9 @@ function readMergedConfig(env: NodeJS.ProcessEnv): MergedConfigResult {
   }
   if (Object.keys(wakeVerification).length > 0) {
     raw.wakeVerification = wakeVerification;
+  }
+  if (Object.keys(localStt).length > 0) {
+    raw.localStt = localStt;
   }
   return { ok: true, raw };
 }

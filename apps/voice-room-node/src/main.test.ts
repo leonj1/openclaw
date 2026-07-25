@@ -245,6 +245,7 @@ async function bootAgainstStub(record: StubRecord, ttsFrames: string[]) {
     makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
     transcribe: async () => ({ ok: true, text: "what's the date" }),
     synthesize: async () => ({ ok: true, frames: ttsFrames }),
+    localStt: { transcribe: async () => ({ ok: true, text: "hey jarvis" }), close: () => {} },
     confirmWake: async () => ({ accepted: true as const, clipPcm: Buffer.alloc(0) }),
   });
   node = booted;
@@ -276,6 +277,8 @@ test("refuses to boot (never listens) when the ElevenLabs TTS preflight fails", 
       makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
       transcribe: async () => ({ ok: true, text: "x" }),
       synthesize: async () => ({ ok: false, error: "401 subscription_required" }),
+      localStt: { transcribe: async () => ({ ok: true, text: "x" }), close: () => {} },
+      confirmWake: async () => ({ accepted: true as const, clipPcm: Buffer.alloc(0) }),
     }),
   ).rejects.toThrow(/TTS preflight failed/);
   // Fail-closed happened before any capture was opened.
@@ -387,6 +390,7 @@ test("wake confirmed: turn proceeds and TTS plays", async () => {
     makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
     transcribe: async () => ({ ok: true, text: "what's the date" }),
     synthesize: async () => ({ ok: true, frames: ["TTS1", "TTS2"] }),
+    localStt: { transcribe: async () => ({ ok: true, text: "x" }), close: () => {} },
     confirmWake: fakeConfirm.confirmWake,
   });
   node = booted;
@@ -428,6 +432,7 @@ test("wake rejected: no turn runs, node stays idle", async () => {
     makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
     transcribe: async () => ({ ok: true, text: "should not be called" }),
     synthesize: async () => ({ ok: true, frames: ["SHOULD_NOT_PLAY"] }),
+    localStt: { transcribe: async () => ({ ok: true, text: "x" }), close: () => {} },
     confirmWake: fakeConfirm.confirmWake,
   });
   node = booted;
@@ -473,6 +478,7 @@ test("wake fail-open: turn still proceeds when confirmWake accepts", async () =>
     makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
     transcribe: async () => ({ ok: true, text: "what's the date" }),
     synthesize: async () => ({ ok: true, frames: ["TTS"] }),
+    localStt: { transcribe: async () => ({ ok: true, text: "x" }), close: () => {} },
     confirmWake: fakeConfirm.confirmWake,
   });
   node = booted;

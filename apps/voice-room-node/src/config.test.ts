@@ -49,6 +49,11 @@ describe("parseNodeConfig", () => {
       timeoutMs: 3000,
       clipMs: 1200,
     });
+    // Local STT defaults
+    expect(result.config.localStt).toEqual({
+      enabled: true,
+      pythonPath: "python3",
+    });
   });
 
   it("rejects a config missing the gateway URL", () => {
