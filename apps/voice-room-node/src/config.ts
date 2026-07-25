@@ -26,8 +26,19 @@ const AudioConfigSchema = z
 
 const WakeConfigSchema = z
   .object({
-    // openWakeWord score in [0,1]; crossings above this fire a wake event.
+    // openWakeWord score in [0,1]. The temporal defaults are provisional until
+    // replayed against the production Anker corpus; all controls are reversible.
     threshold: z.number().min(0).max(1).default(0.5),
+    patienceWindows: z.number().int().min(1).default(1),
+    smoothingWindows: z.number().int().min(1).default(1),
+    vad: z
+      .object({
+        enabled: z.boolean().default(false),
+        // Normalized PCM16 RMS. 0.01 is provisional pending Anker replay.
+        minRms: z.number().min(0).max(1).default(0.01),
+      })
+      .strict()
+      .prefault({}),
   })
   .strict()
   .prefault({});
@@ -43,6 +54,21 @@ const ElevenLabsConfigSchema = z
     sttModel: z.string().min(1).default("scribe_v2"),
     ttsVoiceId: z.string().min(1).default("pNInz6obpgDQGcFmaJgB"),
     ttsModelId: z.string().min(1).default("eleven_multilingual_v2"),
+  })
+  .strict()
+  .prefault({});
+
+// Secondary wake-word verification via a local LLM (ollama). After the ONNX
+// detector fires, a short clip is transcribed and checked against the LLM.
+// Operators can disable verification or retarget the model/endpoint without
+// touching code. Fail-open: ollama or STT errors let the wake through.
+const WakeVerificationConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    model: z.string().min(1).default("llama3.2:3b"),
+    baseUrl: z.string().url().default("http://localhost:11434"),
+    timeoutMs: z.number().int().positive().default(3000),
+    clipMs: z.number().int().positive().default(1200),
   })
   .strict()
   .prefault({});
@@ -70,6 +96,7 @@ export const NodeConfigSchema = z
       })
       .strict()
       .prefault({}),
+    wakeVerification: WakeVerificationConfigSchema,
   })
   .strict();
 
@@ -157,6 +184,27 @@ function readEnvOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
     elevenlabs.ttsModelId = env.ELEVENLABS_MODEL_ID;
   }
 
+  // Wake-verification overrides (ollama model/endpoint/timing). The API key
+  // lives elsewhere; only operational fields are overridable.
+  const wakeVerification: Record<string, unknown> = {};
+  if (env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_MODEL) {
+    wakeVerification.model = env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_MODEL;
+  }
+  if (env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_BASE_URL) {
+    wakeVerification.baseUrl = env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_BASE_URL;
+  }
+  if (env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_TIMEOUT_MS) {
+    wakeVerification.timeoutMs = Number(env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_TIMEOUT_MS);
+  }
+  if (env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_CLIP_MS) {
+    wakeVerification.clipMs = Number(env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_CLIP_MS);
+  }
+  if (env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_ENABLED) {
+    const raw = env.OPENCLAW_VOICE_ROOM_WAKE_VERIFY_ENABLED.toLowerCase();
+    if (raw === "true") wakeVerification.enabled = true;
+    else if (raw === "false") wakeVerification.enabled = false;
+  }
+
   const overrides: Record<string, unknown> = {};
   if (Object.keys(gateway).length > 0) {
     overrides.gateway = gateway;
@@ -166,6 +214,9 @@ function readEnvOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   }
   if (Object.keys(elevenlabs).length > 0) {
     overrides.elevenlabs = elevenlabs;
+  }
+  if (Object.keys(wakeVerification).length > 0) {
+    overrides.wakeVerification = wakeVerification;
   }
   return overrides;
 }
@@ -217,6 +268,10 @@ function readMergedConfig(env: NodeJS.ProcessEnv): MergedConfigResult {
     ...(fileData.elevenlabs as Record<string, unknown> | undefined),
     ...(overrides.elevenlabs as Record<string, unknown> | undefined),
   };
+  const wakeVerification = {
+    ...(fileData.wakeVerification as Record<string, unknown> | undefined),
+    ...(overrides.wakeVerification as Record<string, unknown> | undefined),
+  };
   const raw: Record<string, unknown> = { ...fileData };
   if (Object.keys(gateway).length > 0) {
     raw.gateway = gateway;
@@ -226,6 +281,9 @@ function readMergedConfig(env: NodeJS.ProcessEnv): MergedConfigResult {
   }
   if (Object.keys(elevenlabs).length > 0) {
     raw.elevenlabs = elevenlabs;
+  }
+  if (Object.keys(wakeVerification).length > 0) {
+    raw.wakeVerification = wakeVerification;
   }
   return { ok: true, raw };
 }

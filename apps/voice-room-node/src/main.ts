@@ -18,7 +18,17 @@ import { connectToGateway, type ConnectToGatewayParams } from "./gateway/connect
 import { loadNodeConfig, type NodeConfig } from "./config.js";
 import { synthesizeReply } from "./tts/synthesize.js";
 import { transcribeUtterance } from "./stt/transcribe.js";
-import { createOpenWakeWord, type WakeEvent } from "./wake/openwakeword.js";
+import { HttpOllamaJudge } from "./llm/ollama-judge.js";
+import {
+  type WakeConfirmResult,
+  LlmWakeWordConfirmation,
+} from "./wake/confirm.js";
+import { prefixedFrames } from "./audio/prefixed-frames.js";
+import {
+  createOpenWakeWord,
+  type CreateOpenWakeWordParams,
+  type WakeEvent,
+} from "./wake/openwakeword.js";
 import {
   TalkNode,
   type SttResult,
@@ -114,13 +124,17 @@ export interface BootDeps {
   startCapture?: (options: AudioCaptureOptions) => CaptureHandle;
   startPlayback?: (options: AudioPlaybackOptions) => PlaybackHandle;
   connectToGateway?: (params: ConnectToGatewayParams) => Promise<GatewayHandle>;
-  createDetector?: (params: { threshold: number }) => Promise<Detector>;
+  createDetector?: (params: CreateOpenWakeWordParams) => Promise<Detector>;
   // Wait-music loop factory; defaults to loading the asset WAV and binding it to
   // playback. Tests inject a stub to skip file IO.
   makeWaitLoop?: (sink: PlaybackHandle) => WaitLoopHandle;
   // ElevenLabs boundaries; tests stub these so no network is touched.
   transcribe?: (pcm: Buffer, config: NodeConfig, env: NodeJS.ProcessEnv) => Promise<SttResult>;
   synthesize?: TalkNodeDeps["synthesize"];
+  // Wake-word verification via local LLM. Defaults to a real HttpOllamaJudge +
+  // LlmWakeWordConfirmation when wakeVerification.enabled is true. Tests inject
+  // a fake to control accept/reject/error outcomes.
+  confirmWake?: (frames: AsyncIterableIterator<Buffer>) => Promise<WakeConfirmResult>;
   // Observes each completed turn (result), for the boot test.
   onTurn?: (result: Awaited<ReturnType<TalkNode["runTurn"]>>) => void;
   log?: (line: string) => void;
@@ -189,7 +203,7 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   }
 
   const detector = await (deps.createDetector ?? createOpenWakeWord)({
-    threshold: config.wake.threshold,
+    ...config.wake,
   });
 
   // Own shutdown centrally: disable the children's SIGTERM handlers so the one
@@ -218,12 +232,37 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   )(playback);
   const transcribe = deps.transcribe ?? defaultTranscribe;
 
+  // Wake-word LLM verification. Default to a real HttpOllamaJudge when
+  // enabled; tests inject a fake via deps.confirmWake.
+  const confirmWake: (frames: AsyncIterableIterator<Buffer>) => Promise<WakeConfirmResult> =
+    deps.confirmWake ??
+    (() => {
+      if (!config.wakeVerification.enabled) {
+        return async () => ({ accepted: true as const, clipPcm: Buffer.alloc(0) });
+      }
+      const impl = new LlmWakeWordConfirmation({
+        transcribe: (pcm: Buffer) => transcribe(pcm, config, env),
+        judge: new HttpOllamaJudge({
+          baseUrl: config.wakeVerification.baseUrl,
+          model: config.wakeVerification.model,
+          timeoutMs: config.wakeVerification.timeoutMs,
+        }),
+        log,
+        enabled: true,
+        clipMs: config.wakeVerification.clipMs,
+      });
+      return (frames: AsyncIterableIterator<Buffer>) => impl.confirm(frames);
+    })();
+
   // Active utterance channel while capturing; null otherwise. Its presence is
   // the routing signal: frames go here during capture, to the detector when
   // idle, and are dropped while the node is thinking/speaking. Boxed in an
   // object so the pump closure reads the current value (a closure-mutated `let`
   // would be narrowed away by control-flow analysis).
-  const router: { active: FrameChannel | null } = { active: null };
+  const router: { active: AsyncIterableIterator<Buffer> | null; rawChannel: FrameChannel | null } = {
+    active: null,
+    rawChannel: null,
+  };
 
   const talkDeps: TalkNodeDeps = {
     captureUtterance: async () => {
@@ -237,6 +276,7 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
       });
       // Endpointed: stop feeding this channel so thinking/speaking drop frames.
       router.active = null;
+      router.rawChannel = null;
       return result;
     },
     transcribe: (pcm) => transcribe(pcm, config, env),
@@ -251,8 +291,19 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   let currentTurn: Promise<void> = Promise.resolve();
   const handleWake = (event: WakeEvent): void => {
     log(`WAKE score=${event.score.toFixed(3)} ts=${event.ts}`);
-    router.active = new FrameChannel();
+    const channel = new FrameChannel();
+    router.rawChannel = channel;
+    router.active = channel;
     currentTurn = (async () => {
+      const cr = await confirmWake(channel);
+      if (!cr.accepted) {
+        log("wake-verify: rejected, dropping turn");
+        channel.close();
+        router.active = null;
+        router.rawChannel = null;
+        return;
+      }
+      router.active = prefixedFrames(cr.clipPcm, channel);
       const result = await node.runTurn();
       if (!result.ok) {
         log(`voice-room-node: turn failed at ${result.stage}: ${result.error}`);
@@ -264,8 +315,8 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
   const pump = (async (): Promise<void> => {
     try {
       for await (const frame of capture.frames()) {
-        if (router.active) {
-          router.active.push(frame);
+        if (router.rawChannel) {
+          router.rawChannel.push(frame);
           continue;
         }
         if (node.isMicGated()) {
@@ -307,7 +358,7 @@ export async function bootVoiceRoomNode(deps: BootDeps = {}): Promise<VoiceRoomN
       process.removeListener("SIGTERM", onSigterm);
       shutdownPromise = (async () => {
         await capture.stop();
-        router.active?.close();
+        router.rawChannel?.close();
         await pump;
         await currentTurn;
         await waitLoop.stop();

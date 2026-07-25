@@ -6,6 +6,7 @@ import { afterEach, expect, test } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { bootVoiceRoomNode, type VoiceRoomNode } from "./main.js";
 import { BREVITY_PREAMBLE } from "./agent/brevity.js";
+import type { WakeConfirmResult } from "./wake/confirm.js";
 
 // Everything the stub gateway observed, so tests can assert the connect
 // handshake (cap "talk") and the Layer 2 turn RPCs (chat.send/agent.wait).
@@ -244,6 +245,7 @@ async function bootAgainstStub(record: StubRecord, ttsFrames: string[]) {
     makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
     transcribe: async () => ({ ok: true, text: "what's the date" }),
     synthesize: async () => ({ ok: true, frames: ttsFrames }),
+    confirmWake: async () => ({ accepted: true as const, clipPcm: Buffer.alloc(0) }),
   });
   node = booted;
   return { booted, capture, playback };
@@ -302,6 +304,7 @@ test("exits for restart when mic capture ends unexpectedly (arecord died)", asyn
     makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
     transcribe: async () => ({ ok: true, text: "x" }),
     synthesize: async () => ({ ok: true, frames: ["TTS"] }),
+    confirmWake: async () => ({ accepted: true as const, clipPcm: Buffer.alloc(0) }),
   });
   node = booted;
 
@@ -325,6 +328,160 @@ test("runs exactly one talk turn per wake: chat.send carries the brevity prepend
   expect(playback.enqueued()).toEqual(["TTSFRAME1", "TTSFRAME2"]);
 
   // Turn finished -> back to idle.
+  await waitFor(() => booted.state() === "idle");
+  expect(booted.state()).toBe("idle");
+});
+
+// ---------------------------------------------------------------------------
+// Wake-verification tests
+// ---------------------------------------------------------------------------
+
+function fakeConfirmWake(result: WakeConfirmResult) {
+  let calls = 0;
+  let lastFrames: Buffer | null = null;
+  return {
+    confirmWake: async (frames: AsyncIterableIterator<Buffer>): Promise<WakeConfirmResult> => {
+      calls++;
+      const chunks: Buffer[] = [];
+      // Drain only a small number of frames (simulates clipMs capture),
+      // leaving the rest for the utterance capture.
+      let count = 0;
+      for await (const frame of frames) {
+        chunks.push(frame);
+        if (++count >= 3) break; // capture 3 frames (~60ms) for verification
+      }
+      lastFrames = Buffer.concat(chunks);
+      return result;
+    },
+    calls: () => calls,
+    lastFrames: () => lastFrames,
+  };
+}
+
+test("wake confirmed: turn proceeds and TTS plays", async () => {
+  const record = newRecord();
+  const port = await getFreePort();
+  wss = new WebSocketServer({ port, host: "127.0.0.1" });
+  startStubGateway(wss, record);
+
+  const configPath = path.join(os.tmpdir(), `voice-room-node-wv-accept-${port}.json`);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { url: `ws://127.0.0.1:${port}` },
+      endpointing: { silenceMs: 60, maxUtteranceMs: 5_000 },
+    }),
+  );
+  tmpFiles.push(configPath);
+
+  const capture = fakeCapture();
+  const playback = fakePlayback();
+  const clipPcm = Buffer.from([0x01, 0x02]);
+  const fakeConfirm = fakeConfirmWake({ accepted: true, clipPcm });
+
+  const booted = await bootVoiceRoomNode({
+    env: { OPENCLAW_VOICE_ROOM_CONFIG: configPath },
+    startCapture: () => capture,
+    startPlayback: () => playback,
+    createDetector: async () => fakeDetector(),
+    makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
+    transcribe: async () => ({ ok: true, text: "what's the date" }),
+    synthesize: async () => ({ ok: true, frames: ["TTS1", "TTS2"] }),
+    confirmWake: fakeConfirm.confirmWake,
+  });
+  node = booted;
+
+  await waitFor(() => playback.enqueued().length >= 2);
+  expect(fakeConfirm.calls()).toBe(1);
+  expect(playback.enqueued().length).toBeGreaterThanOrEqual(2);
+  expect(record.chatSendMessage?.endsWith("what's the date")).toBe(true);
+
+  await waitFor(() => booted.state() === "idle");
+  expect(booted.state()).toBe("idle");
+});
+
+test("wake rejected: no turn runs, node stays idle", async () => {
+  const record = newRecord();
+  const port = await getFreePort();
+  wss = new WebSocketServer({ port, host: "127.0.0.1" });
+  startStubGateway(wss, record);
+
+  const configPath = path.join(os.tmpdir(), `voice-room-node-wv-reject-${port}.json`);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { url: `ws://127.0.0.1:${port}` },
+      endpointing: { silenceMs: 60, maxUtteranceMs: 5_000 },
+    }),
+  );
+  tmpFiles.push(configPath);
+
+  const capture = fakeCapture();
+  const playback = fakePlayback();
+  const fakeConfirm = fakeConfirmWake({ accepted: false });
+
+  const booted = await bootVoiceRoomNode({
+    env: { OPENCLAW_VOICE_ROOM_CONFIG: configPath },
+    startCapture: () => capture,
+    startPlayback: () => playback,
+    createDetector: async () => fakeDetector(),
+    makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
+    transcribe: async () => ({ ok: true, text: "should not be called" }),
+    synthesize: async () => ({ ok: true, frames: ["SHOULD_NOT_PLAY"] }),
+    confirmWake: fakeConfirm.confirmWake,
+  });
+  node = booted;
+
+  // Give the pump time to process the wake. The turn should be skipped.
+  await delay(200);
+
+  expect(fakeConfirm.calls()).toBe(1);
+  // No chat.send should have happened — turn was rejected.
+  expect(record.chatSendMessage).toBeNull();
+  // No TTS frames enqueued.
+  expect(playback.enqueued().length).toBe(0);
+  // Node is idle (not thinking/speaking).
+  expect(booted.state()).toBe("idle");
+});
+
+test("wake fail-open: turn still proceeds when confirmWake accepts", async () => {
+  // Simulation of ollama-down: confirmWake returns { accepted: true } (fail-open).
+  const record = newRecord();
+  const port = await getFreePort();
+  wss = new WebSocketServer({ port, host: "127.0.0.1" });
+  startStubGateway(wss, record);
+
+  const configPath = path.join(os.tmpdir(), `voice-room-node-wv-failopen-${port}.json`);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { url: `ws://127.0.0.1:${port}` },
+      endpointing: { silenceMs: 60, maxUtteranceMs: 5_000 },
+    }),
+  );
+  tmpFiles.push(configPath);
+
+  const capture = fakeCapture();
+  const playback = fakePlayback();
+  const fakeConfirm = fakeConfirmWake({ accepted: true, clipPcm: Buffer.alloc(0) });
+
+  const booted = await bootVoiceRoomNode({
+    env: { OPENCLAW_VOICE_ROOM_CONFIG: configPath },
+    startCapture: () => capture,
+    startPlayback: () => playback,
+    createDetector: async () => fakeDetector(),
+    makeWaitLoop: () => ({ start: () => {}, stop: async () => {} }),
+    transcribe: async () => ({ ok: true, text: "what's the date" }),
+    synthesize: async () => ({ ok: true, frames: ["TTS"] }),
+    confirmWake: fakeConfirm.confirmWake,
+  });
+  node = booted;
+
+  await waitFor(() => playback.enqueued().length >= 1);
+  expect(fakeConfirm.calls()).toBe(1);
+  expect(playback.enqueued().length).toBeGreaterThanOrEqual(1);
+  expect(record.chatSendMessage).not.toBeNull();
+
   await waitFor(() => booted.state() === "idle");
   expect(booted.state()).toBe("idle");
 });
