@@ -29,7 +29,7 @@ concurrency:
 jobs:
   plan:
     if: github.repository == 'openclaw/openclaw' && (github.event_name != 'push' || github.actor != 'github-actions[bot]')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     outputs:
       has_locales: ${{ steps.plan.outputs.has_locales }}
       locales_json: ${{ steps.plan.outputs.locales_json }}
@@ -108,7 +108,7 @@ jobs:
       max-parallel: 4
       matrix:
         locale: ${{ fromJson(needs.plan.outputs.locales_json) }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     name: Refresh ${{ matrix.locale }}
     steps:
       - name: Checkout
@@ -222,7 +222,7 @@ jobs:
     name: Commit control UI locale refresh
     needs: refresh
     if: needs.refresh.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

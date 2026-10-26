@@ -46,7 +46,7 @@ jobs:
   runner-admission:
     permissions:
       contents: read
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 3
     env:
       OPENCLAW_MAIN_CI_DEBOUNCE_SECONDS: "90"
@@ -68,7 +68,7 @@ jobs:
       contents: read
     needs: [runner-admission]
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     outputs:
       checkout_revision: ${{ steps.checkout_ref.outputs.sha }}
@@ -404,7 +404,7 @@ jobs:
       contents: read
     needs: [runner-admission]
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     env:
       PRE_COMMIT_HOME: .cache/pre-commit-security-fast
@@ -546,7 +546,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_node == 'true' || needs.preflight.outputs.run_check_docs == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     steps:
       - &linux_node_checkout_step
@@ -608,7 +608,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     outputs:
       channels-result: ${{ steps.built_artifact_checks.outputs['channels-result'] }}
@@ -821,7 +821,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: ${{ !cancelled() && always() && needs.preflight.outputs.run_native_i18n == 'true' }}
-    runs-on: ${{ github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: "${{ (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}"
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -850,7 +850,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_fast_core == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) }}"
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -931,7 +931,7 @@ jobs:
     name: ${{ matrix.checkName }}
     needs: [preflight]
     if: needs.preflight.outputs.run_plugin_contracts_shards == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -969,7 +969,7 @@ jobs:
     name: ${{ matrix.checkName }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_fast == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -1007,7 +1007,7 @@ jobs:
     name: checks-node-compat-node22
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 60
     steps:
       - *linux_node_checkout_step
@@ -1036,7 +1036,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_node_core_nondist == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) }}"
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       fail-fast: false
@@ -1133,7 +1133,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: ${{ !cancelled() && always() && needs.preflight.outputs.run_check == 'true' }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -1236,7 +1236,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: ${{ !cancelled() && always() && needs.preflight.outputs.run_check_additional == 'true' }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -1409,7 +1409,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_check_docs == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     steps:
       - *linux_node_checkout_step
@@ -1470,7 +1470,7 @@ jobs:
       contents: read
     needs: [preflight]
     if: needs.preflight.outputs.run_skills_python_job == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -1525,7 +1525,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_windows == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'windows-2025' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-8vcpu-windows-2025') || 'windows-2025') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'windows-2025' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-8vcpu-windows-2025') || 'windows-2025')) == 'windows-2025' && fromJSON('[\"self-hosted\",\"windows\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'windows-2025' || (github.repository == 'openclaw/openclaw' && (matrix.runner || 'blacksmith-8vcpu-windows-2025') || 'windows-2025')) }}"
     timeout-minutes: 60
     env:
       NODE_OPTIONS: --max-old-space-size=8192
@@ -1671,7 +1671,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: ${{ !cancelled() && always() && needs.preflight.outputs.run_macos_node == 'true' }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'macos-15' || (github.repository == 'openclaw/openclaw' && 'blacksmith-6vcpu-macos-15' || 'macos-15') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'macos-15' || (github.repository == 'openclaw/openclaw' && 'blacksmith-6vcpu-macos-15' || 'macos-15')) == 'macos-15' && fromJSON('[\"self-hosted\",\"macOS\",\"ARM64\"]') || (github.event_name == 'workflow_dispatch' && 'macos-15' || (github.repository == 'openclaw/openclaw' && 'blacksmith-6vcpu-macos-15' || 'macos-15')) }}"
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -1710,7 +1710,7 @@ jobs:
     name: "macos-swift"
     needs: [preflight]
     if: needs.preflight.outputs.run_macos_swift == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'macos-26' || (github.repository == 'openclaw/openclaw' && 'blacksmith-12vcpu-macos-26' || 'macos-26') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'macos-26' || (github.repository == 'openclaw/openclaw' && 'blacksmith-12vcpu-macos-26' || 'macos-26')) == 'macos-26' && fromJSON('[\"self-hosted\",\"macOS\",\"ARM64\"]') || (github.event_name == 'workflow_dispatch' && 'macos-26' || (github.repository == 'openclaw/openclaw' && 'blacksmith-12vcpu-macos-26' || 'macos-26')) }}"
     timeout-minutes: 20
     steps:
       - *platform_checkout_step
@@ -1836,7 +1836,7 @@ jobs:
     name: "ios-build"
     needs: [preflight]
     if: needs.preflight.outputs.run_ios_build == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'macos-26' || (github.repository == 'openclaw/openclaw' && 'blacksmith-12vcpu-macos-26' || 'macos-26') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'macos-26' || (github.repository == 'openclaw/openclaw' && 'blacksmith-12vcpu-macos-26' || 'macos-26')) == 'macos-26' && fromJSON('[\"self-hosted\",\"macOS\",\"ARM64\"]') || (github.event_name == 'workflow_dispatch' && 'macos-26' || (github.repository == 'openclaw/openclaw' && 'blacksmith-12vcpu-macos-26' || 'macos-26')) }}"
     timeout-minutes: 45
     steps:
       - *platform_checkout_step
@@ -1875,7 +1875,7 @@ jobs:
     name: ${{ matrix.check_name }}
     needs: [preflight]
     if: needs.preflight.outputs.run_android_job == 'true'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: "${{ (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04')) == 'ubuntu-24.04' && fromJSON('[\"self-hosted\",\"linux\",\"x64\"]') || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}"
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -2024,7 +2024,7 @@ jobs:
       - android
     # Re-enable this job when we want to collect CI timing data for timing optimization.
     if: ${{ false && !cancelled() && always() && github.event_name != 'push' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     steps:
       - name: Checkout timing summary helper
